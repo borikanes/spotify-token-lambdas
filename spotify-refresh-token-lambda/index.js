@@ -3,7 +3,6 @@ const axios = require('axios');
 const qs = require('qs');
 
 exports.handler = async (event) => {
-	console.log(event)
 	console.log("--------------Lambda function started---------------");
 	const config = {
 	    method: "POST",
@@ -17,17 +16,14 @@ exports.handler = async (event) => {
 	      refresh_token: event.data.refresh_token
 	    }
 	}
-	console.log("--------------Set config var---------------");
 	try {
 		config.data = qs.stringify(config.data)
-		console.log(config.data);
+
 		let res = await axios(config);
 		let data = res.data;
-		console.log(data);
+
 		return data;
 	} catch(err) {
-		console.log(err);
-		console.log(err.data);
-		return err.data;
+		return err;
 	}
 };
