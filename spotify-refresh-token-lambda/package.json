@@ -1,0 +1,16 @@
+{
+  "name": "spotify-refresh-token-lambda",
+  "version": "0.0.1",
+  "description": "Spotify Refresh token lambda",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "axios": "^0.17.1",
+    "btoa": "^1.1.2",
+    "qs": "^6.5.1"
+  },
+  "author": "Bori Oludemi",
+  "license": "ISC"
+}
