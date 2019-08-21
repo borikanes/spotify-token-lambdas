@@ -1,6 +1,6 @@
 # Repo for all spotify server side lamdas
 
-This repo contains lambda code for oauth transactions with Spotify
+This repo contains lambda code for oauth transactions with Spotify's API
 
 ## Config
 - Using AWS lambda and AWS API gateway to achieve token generation and refresh. For more info about token swap and refresh see [Spotify's documentation](https://developer.spotify.com/documentation/ios/guides/token-swap-and-refresh/)
