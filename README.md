@@ -49,8 +49,10 @@ It get's a little tricky here. You're using this gateway to point to your lambda
 ```
 I highly recommend [this article](https://blog.summercat.com/using-aws-lambda-and-api-gateway-as-html-form-endpoint.html) if you've never worked with API gateways and lambdas. It has screenshots. 
 
-** THIS IS A MUST **
-Also keep in mind that for the token swap, the lambda is expecting a key, "code" with its value being the authorization code you get from the auth modal or spotify app.  For the refresh token, keep in mind that you need to pass in a key "refresh_token" with its value being the refresh token. Set content type to `application/x-www-form-urlencoded`
+**VERY IMPORTANT**
+
+Keep in mind that for the token swap, the lambda is expecting a key, "code" with its value being the authorization code you get from the auth modal or spotify app.  For the refresh token, keep in mind that you need to pass in a key "refresh_token" with its value being the refresh token. Set content type to `application/x-www-form-urlencoded`.  These keys and values are specified in the Spotify token swap and refresh token documentation.
+
 
 **Things to note:**
 - You'll want create a role for lambda that has access to API Gateway and CloudWatch Logs.
