@@ -13,7 +13,7 @@ exports.handler = async (event) => {
 	    },
 	    data: {
 	      grant_type: "refresh_token",
-	      refresh_token: event.data.refresh_token
+	      refresh_token: event.data.refresh_token // refresh token should be passed in the body of the request to this lambda function and it should have a key "refresh_token"
 	    }
 	}
 	try {

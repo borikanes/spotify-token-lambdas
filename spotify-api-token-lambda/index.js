@@ -13,7 +13,7 @@ exports.handler = async (event) => {
 	    data: {
 	      grant_type: 'authorization_code',
 	      redirect_uri: process.env.SPOTIFY_CLIENT_CALLBACK_URL,
-	      code: event.data.code
+	      code: event.data.code // authorization code is passed in the body as key "code"
 	    }
 	}
 
