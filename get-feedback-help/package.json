@@ -1,0 +1,17 @@
+{
+  "name": "spotify-feedback-handler",
+  "version": "1.0.0",
+  "description": "Accepts message from app and sends to admin email",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.538.0"
+  },
+  "engines": {
+    "node": "10.x"
+  },
+  "author": "Bori Oludemi",
+  "license": "ISC"
+}

@@ -1,0 +1,14 @@
+{
+  "name": "fetch-new-song",
+  "version": "1.0.0",
+  "description": "Handles the core mechanism to determine when there's a new playlist",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Bori Oludemi",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.797.0"
+  }
+}

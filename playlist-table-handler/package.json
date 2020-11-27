@@ -1,0 +1,15 @@
+{
+  "name": "playlist-table-handler",
+  "version": "1.0.0",
+  "description": "Code base to handle logic on the playlist dynamo table side including updating the table with latest information",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "bori oludemi",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.798.0",
+    "uuid": "^8.3.1"
+  }
+}
