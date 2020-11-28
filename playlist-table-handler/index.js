@@ -93,7 +93,8 @@ exports.handler = async (event) => {
             };
 
             const playlistItem = await documentClient.get(dynamoGetParams).promise();
-            const watchCount = playlistItem.watchCount;
+            console.log(`Playlist ITEM ======> ${JSON.stringify(playlistItem)}`);
+            const watchCount = playlistItem.Item.watchCount;
             if (watchCount) {
                 if (watchCount > 1) { // update by decrementing by 1
                     const counterUpdateParam = {
@@ -107,12 +108,27 @@ exports.handler = async (event) => {
                     const counterUpdateResponse = await documentClient.update(counterUpdateParam).promise();
                     console.log(`Successfully dcecremented watchCount for playlistId ${playlistId}`);
                 } else { // remove playlistId totally from dynamo
+                    // Get rid of all trackUUIDs first
+                    if (playlistItem.Item.trackUUIDs) {
+                        console.log("==============Starting to delete trackUUIDs=============");
+                        const trackUUIDs = playlistItem.Item.trackUUIDs.values;
+                        for (const currentTrack of trackUUIDs) {
+                            console.log(`==============deleting ${currentTrack}.....=============`);
+                            const deleteTrackParams = {
+                                TableName: songTrackerTableName,
+                                Key: {id: currentTrack}
+                            }
+                            const deletedData = await documentClient.delete(deleteTrackParams).promise();
+                            console.log(`Successfully deleted ${currentTrack}`);
+                        }
+                    }
+
+                    console.log(`Deleting PlaylistId ${playlistId}`);
                     const deletePlaylistParams = {
                         TableName: playlistTableName,
-                        Key: {id: playlistId}
+                        Key: {playlistId: playlistId}
                     }
-                    const deletedData = documentClient.delete(deletePlaylistParams).promise();
-                    console.log(`Successfully deleted playlistId ${playlistId}`);
+                    const deletedData = await documentClient.delete(deletePlaylistParams).promise();
                 }
             } else {
                 // Something is def wrong, there should be watchCount
@@ -173,7 +189,7 @@ exports.handler = async (event) => {
                                 TableName: songTrackerTableName,
                                 Key: {id: trackUUID}
                             }
-                            const deletedData = documentClient.delete(deleteTrackParams).promise();
+                            const deletedData = await documentClient.delete(deleteTrackParams).promise();
 
                             // Remove trackUUID from playlist table
                             console.log(`==================REMOVING TRACK ${trackUUID} FROM SET==================`);
