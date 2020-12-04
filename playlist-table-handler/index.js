@@ -12,9 +12,74 @@ const songTrackerTableName = "SongTrackMapper";
 const resourceBucket = "song-updater-resources";
 const playlistFileKey = "playlists.json";
 
+async function removeItemFromArrayInS3(item) {
+    try {
+        const getParams = {
+            Bucket: resourceBucket,
+            Key: playlistFileKey,
+        }
+        const data = await s3.getObject(getParams).promise();
+        const jsonString = data.Body.toString('utf-8');
+        let playlistDictionary = JSON.parse(jsonString);
+        if (!playlistDictionary.hasOwnProperty(item)) { // if playlist doesn't exist, yikes - shouldn't happen
+            return;
+        }
+        // else
+        if (playlistDictionary[item] <= 1) { // If there's only one instance of the current playlist to be removed....
+            delete playlistDictionary[item];
+        } else { // just subtract 1 from the count of playlist
+            playlistDictionary[playlistId] -= 1
+        }
+
+        const putParams = {
+            Bucket: resourceBucket,
+            Key: playlistFileKey,
+            Body: JSON.stringify(playlistDictionary),
+            ContentType: "application/json",
+        }
+        const s3Data = await s3.putObject(putParams).promise();
+        console.log("Removed playlist");
+        return;
+    } catch (e) {
+        console.log(`Unsuccessfully removed item ${item}. Error ${e.stack}`);
+        throw e;
+    }
+}
+
+async function addItemToPlaylistArrayInS3(playlistId) {
+    try {
+        // Add to S3
+        const getParams = {
+            Bucket: resourceBucket,
+            Key: playlistFileKey,
+        }
+        const data = await s3.getObject(getParams).promise();
+        const jsonString = data.Body.toString('utf-8');
+        const playlistDictionary = JSON.parse(jsonString);
+
+        if (playlistDictionary.hasOwnProperty(playlistId)) { // if playlist already exists
+            playlistDictionary[playlistId] += 1
+        } else {
+            playlistDictionary[playlistId] = 1
+        }
+
+        const putParams = {
+            Bucket: resourceBucket,
+            Key: playlistFileKey,
+            Body: JSON.stringify(playlistDictionary),
+            ContentType: "application/json",
+        }
+        const s3Data = await s3.putObject(putParams).promise();
+    } catch (e) {
+        console.log(`Error adding playlist to json array in S3. Error => ${e.stack}`);
+        throw e;
+    }
+}
+
 exports.handler = async (event) => {
     let playlistId;
     // if event is to add playlist
+    // TODO: Don't add duplicate playlist
     if (event.path && event.path === "/playlists/add") {
         try {
             const body = JSON.parse(event.body);
@@ -33,23 +98,7 @@ exports.handler = async (event) => {
             }
             const dynamoResponse = await documentClient.put(dynamoPutParams).promise();
 
-            // Add to S3
-            const getParams = {
-                Bucket: resourceBucket,
-                Key: playlistFileKey,
-            }
-            const data = await s3.getObject(getParams).promise();
-            const jsonString = data.Body.toString('utf-8');
-            const playlistArray = JSON.parse(jsonString);
-            playlistArray.push(playlistId); // should be unique since dynamo would throw an error
-
-            const putParams = {
-                Bucket: resourceBucket,
-                Key: playlistFileKey,
-                Body: JSON.stringify(playlistArray),
-                ContentType: "application/json",
-            }
-            const s3Data = await s3.putObject(putParams).promise();
+            await addItemToPlaylistArrayInS3(playlistId);
             return({
                 statusCode: 200,
             });
@@ -129,6 +178,7 @@ exports.handler = async (event) => {
                         Key: {playlistId: playlistId}
                     }
                     const deletedData = await documentClient.delete(deletePlaylistParams).promise();
+                    await removeItemFromArrayInS3(playlistId);
                 }
             } else {
                 // Something is def wrong, there should be watchCount

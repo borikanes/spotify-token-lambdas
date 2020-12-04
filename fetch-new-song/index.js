@@ -1,11 +1,65 @@
 const AWS = require('aws-sdk');
-AWS.config.update({region: 'us-east-1'});
+const notificationTrackerTableName = "NotificationTracker";
+const watchedPlaylistsTableName = "WatchedPlaylists";
+const resourceBucket = "song-updater-resources";
+const playlistFileKey = "playlists.json";
 
+AWS.config.update({region: 'us-east-1'});
 const documentClient = new AWS.DynamoDB.DocumentClient();
+const s3 = new AWS.S3();
+
+
+// Allows me to get the next hour from current UTC time
+/*const timeNow = new Date();
+const timNowHourInUTC = timeNow.getUTCHours();
+const preferredNotificationTimeToQuery = timNowHourInUTC;
+
+const queryDynamoParam = {
+    TableName : notificationTrackerTableName,
+    KeyConditionExpression: "preferredNotificationTime = :time",
+    ExpressionAttributeValues: {
+        ":time": preferredNotificationTimeToQuery
+    }
+}
+
+const dynamoResponse = await documentClient.query(queryDynamoParam).promise();
+const devices = dynamoResponse.Items;
+for (const currentDevice of devices) {
+    if (currentDevice.watchedPlaylists) {
+
+    }
+}*/
+
+async function getPlaylistArrayFromS3() {
+    try {
+        // Add to S3
+        const getParams = {
+            Bucket: resourceBucket,
+            Key: playlistFileKey,
+        }
+        const data = await s3.getObject(getParams).promise();
+        const jsonString = data.Body.toString('utf-8');
+        const playlistArray = JSON.parse(jsonString);
+        return playlistArray;
+    } catch (e) {
+        console.log(`Error gettin json array from S3. Error => ${e.stack}`);
+        throw e;
+    }
+}
 
 exports.handler = async (event) => {
-    // Get spotify Token
-    // Get playlist songs by id in event
+    try {
+        const playlists = await getPlaylistArrayFromS3();
+        for (const currentPlaylist in playlists) {
+            // Get spotify Token
+            // Go through all playlists
+            // Check added_at time
+        }
+
+    } catch (e) {
+        console.log(`Some error occured => ${e.stack}`);
+        throw e;
+    }
 
     const response = {
         statusCode: 200,
