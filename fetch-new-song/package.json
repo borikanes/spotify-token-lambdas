@@ -9,6 +9,9 @@
   "author": "Bori Oludemi",
   "license": "ISC",
   "dependencies": {
-    "aws-sdk": "^2.797.0"
+    "aws-sdk": "^2.804.0",
+    "btoa": "^1.2.1",
+    "node-fetch": "^2.6.1",
+    "qs": "^6.9.4"
   }
 }
