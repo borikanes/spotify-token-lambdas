@@ -85,7 +85,7 @@ function isTimeWithin24Hours(addedAtTimestamp) {
 
     const dateDifferenceInHours = (now - addedAtTimestampParsed) / 36e5;
 
-    return (dateDifferenceInHours < 24);
+    return (dateDifferenceInHours < 144);
 }
 
 async function getTracksAddedInTheLast24Hours(playlistId) {
@@ -113,12 +113,13 @@ async function getTracksAddedInTheLast24Hours(playlistId) {
             newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
         }
     }
-
+    console.log(`Leaving getTracksAddedInTheLast24Hour. Array => ${JSON.stringify(newTracksArray)}`);
     return newTracksArray;
 }
 
 // TODO: Use Batch write Item eventually?
 async function addTrackToDynamo(trackItem, playlistId) {
+    console.log(`In Add track to Dynamo`);
     // generate uuid for track and add to current playlist on WatchedPlaylists table
     // push song info with uuid
     const trackUUID = uuidv4();
@@ -142,7 +143,7 @@ async function addTrackToDynamo(trackItem, playlistId) {
     const updatePlaylistWithTrackParam = {
         TableName: watchedPlaylistsTableName,
         Key: {playlistId: playlistId},
-        UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD newTracks :track_uuid',
+        UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD trackUUIDs :track_uuid',
         ExpressionAttributeValues: {
             ":track_uuid": documentClient.createSet([trackUUID]),
             ":timestamp": timeInUTC
@@ -227,6 +228,7 @@ exports.handler = async (event) => {
 
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
+        // const playlists = ["6omtoYWO4IMVgUNF0vNI8L"]; // test
         console.log(playlists);
         for (const currentPlaylistId of playlists) {
             console.log(`========>${currentPlaylistId}<========`);
@@ -235,11 +237,10 @@ exports.handler = async (event) => {
             const tracks = await getTracksAddedInTheLast24Hours(currentPlaylistId);
             if (tracks.length > 0) { // IF there's at least one track
                 for (const trackItem of tracks) {
+                    console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
                     await addTrackToDynamo(trackItem, currentPlaylistId);
                 }
             }
-
-            break;
         }
 
     } catch (e) {

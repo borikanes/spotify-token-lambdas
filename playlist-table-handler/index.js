@@ -28,7 +28,7 @@ async function removeItemFromArrayInS3(item) {
         if (playlistDictionary[item] <= 1) { // If there's only one instance of the current playlist to be removed....
             delete playlistDictionary[item];
         } else { // just subtract 1 from the count of playlist
-            playlistDictionary[playlistId] -= 1
+            playlistDictionary[item] -= 1
         }
 
         const putParams = {
@@ -156,7 +156,7 @@ exports.handler = async (event) => {
                     }
                     const counterUpdateResponse = await documentClient.update(counterUpdateParam).promise();
                     console.log(`Successfully dcecremented watchCount for playlistId ${playlistId}`);
-                } else { // remove playlistId totally from dynamo
+                } else { // remove playlistId totally from dynamo. Really not needed since it'll be gone in 24hours
                     // Get rid of all trackUUIDs first
                     if (playlistItem.Item.trackUUIDs) {
                         console.log("==============Starting to delete trackUUIDs=============");
