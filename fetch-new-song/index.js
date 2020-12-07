@@ -2,6 +2,7 @@ const AWS = require('aws-sdk');
 const btoa = require('btoa');
 const qs = require('qs');
 const fetch = require('node-fetch');
+const { v4: uuidv4 } = require('uuid'); // uuidv4()
 
 const notificationTrackerTableName = "NotificationTracker";
 const watchedPlaylistsTableName = "WatchedPlaylists";
@@ -13,7 +14,6 @@ const spotifyBaseURL = "https://api.spotify.com/v1";
 AWS.config.update({region: 'us-east-1'});
 const documentClient = new AWS.DynamoDB.DocumentClient();
 const s3 = new AWS.S3();
-
 
 // Allows me to get the next hour from current UTC time
 /*const timeNow = new Date();
@@ -117,8 +117,38 @@ async function getTracksAddedInTheLast24Hours(playlistId) {
     return newTracksArray;
 }
 
-async function addTrackToDynamo(track) {
+// TODO: Use Batch write Item eventually?
+async function addTrackToDynamo(trackItem, playlistId) {
+    // generate uuid for track and add to current playlist on WatchedPlaylists table
+    // push song info with uuid
+    const trackUUID = uuidv4();
+    const timeInUTC = new Date().toISOString();
 
+
+    const dynamoTrackPutParams = {
+        TableName: songTrackerTableName,
+        Item: {
+            id: trackUUID,
+            lastModifiedTimestamp: timeInUTC,
+            trackId: trackItem.track.id,
+            uri: trackItem.track.uri,
+            name: trackItem.track.name,
+            artist: trackItem.track.artists[0].name // For now just return the first artist??
+        },
+    };
+    await documentClient.put(dynamoTrackPutParams).promise();
+
+    // Add uuid to playlist
+    const updatePlaylistWithTrackParam = {
+        TableName: watchedPlaylistsTableName,
+        Key: {playlistId: playlistId},
+        UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD newTracks :track_uuid',
+        ExpressionAttributeValues: {
+            ":track_uuid": documentClient.createSet([trackUUID]),
+            ":timestamp": timeInUTC
+        }
+    }
+    await documentClient.update(updatePlaylistWithTrackParam).promise();
 }
 
 // Method to update tracks on playlist AND tracks tables
@@ -198,17 +228,16 @@ exports.handler = async (event) => {
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
         console.log(playlists);
-        for (const currentPlaylist of playlists) {
-            console.log(`========>${currentPlaylist}<========`);
+        for (const currentPlaylistId of playlists) {
+            console.log(`========>${currentPlaylistId}<========`);
             // Get spotify Token
-            // TODO:Find best way to handle expired tokens. Handle 401 issues. Resolve why playlist added_at all returns less than 24 hours???
-            const tracks = await getTracksAddedInTheLast24Hours(currentPlaylist);
+            // TODO:Find best way to handle expired tokens. Handle 401 issues.
+            const tracks = await getTracksAddedInTheLast24Hours(currentPlaylistId);
             if (tracks.length > 0) { // IF there's at least one track
-                for (const track of tracks) {
-
+                for (const trackItem of tracks) {
+                    await addTrackToDynamo(trackItem, currentPlaylistId);
                 }
             }
-            // Make request to add
 
             break;
         }
