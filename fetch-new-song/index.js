@@ -16,25 +16,7 @@ const documentClient = new AWS.DynamoDB.DocumentClient();
 const s3 = new AWS.S3();
 
 // Allows me to get the next hour from current UTC time
-/*const timeNow = new Date();
-const timNowHourInUTC = timeNow.getUTCHours();
-const preferredNotificationTimeToQuery = timNowHourInUTC;
 
-const queryDynamoParam = {
-    TableName : notificationTrackerTableName,
-    KeyConditionExpression: "preferredNotificationTime = :time",
-    ExpressionAttributeValues: {
-        ":time": preferredNotificationTimeToQuery
-    }
-}
-
-const dynamoResponse = await documentClient.query(queryDynamoParam).promise();
-const devices = dynamoResponse.Items;
-for (const currentDevice of devices) {
-    if (currentDevice.watchedPlaylists) {
-
-    }
-}*/
 
 async function fetchSpotifyToken() {
     const config = {
@@ -80,12 +62,13 @@ async function getPlaylistArrayFromS3() {
 }
 
 function isTimeWithin24Hours(addedAtTimestamp) {
-    const now = new Date();
+    let now = new Date().toISOString();
+    now = Date.parse(now);
     const addedAtTimestampParsed = Date.parse(addedAtTimestamp);
 
-    const dateDifferenceInHours = (now - addedAtTimestampParsed) / 36e5;
-
-    return (dateDifferenceInHours < 144);
+    const dateDifferenceInHours = Math.trunc( (now - addedAtTimestampParsed) / 36e5 );
+    console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
+    return (dateDifferenceInHours < 24);
 }
 
 async function getTracksAddedInTheLast24Hours(playlistId) {
@@ -118,6 +101,7 @@ async function getTracksAddedInTheLast24Hours(playlistId) {
 }
 
 // TODO: Use Batch write Item eventually?
+// writes the new track to the playlist and track table with new songs in last 24 hoours
 async function addTrackToDynamo(trackItem, playlistId) {
     console.log(`In Add track to Dynamo`);
     // generate uuid for track and add to current playlist on WatchedPlaylists table
@@ -219,6 +203,54 @@ async function updateTracks() {
             continue; // If error, just continue to next playlist
         }
     }
+}
+
+async function sendNotificationForCurrentTime() {
+    const now = new Date();
+    const currentHour = now.getUTCHours();
+
+    // Get all devices with current Hour aka preferredNotificationTime
+    const dynamoQueryParam = {
+        TableName: notificationTrackerTableName,
+        IndexName: "preferredNotificationTimeIndex",
+        KeyConditionExpression: "preferredNotificationTime = :time",
+        ExpressionAttributeValues: {
+            ":time": currentHour.toString()
+        }
+    };
+
+    const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
+    const devices = dynamoResponse.Items;
+    for (const currentDevice of devices) {
+        if (currentDevice.watchedPlaylists) {
+            // Get set values and check if at least one playlist has a new song
+            const playlistIdArray = currentDevice.watchedPlaylists.values;
+            if (await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray)) {
+                // Construct request to send notification to currentDevice
+                
+                console.log(`Sent notification to ${currentDevice.deviceId} on ${new Date().toISOString()}`);
+            }
+        }
+        // else don't send, on to the next device
+    }
+
+}
+
+async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
+    for (const playlistId of playlistArray) {
+        const dynamoGetParams = {
+            TableName: watchedPlaylistsTableName,
+            Key: {playlistId: playlistId}
+        };
+        const data = await documentClient.get(dynamoGetParams).promise();
+        const playlist = data.Item;
+
+        if (playlist.trackUUIDs) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 exports.handler = async (event) => {
