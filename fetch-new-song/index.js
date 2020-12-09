@@ -19,7 +19,7 @@ const s3 = new AWS.S3();
 
 
 async function fetchSpotifyToken() {
-    const config = {
+    let config = {
 	    method: "POST",
 	    headers: {
 	      "Content-Type": "application/x-www-form-urlencoded",
@@ -68,7 +68,7 @@ function isTimeWithin24Hours(addedAtTimestamp) {
 
     const dateDifferenceInHours = Math.trunc( (now - addedAtTimestampParsed) / 36e5 );
     console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
-    return (dateDifferenceInHours < 24);
+    return (dateDifferenceInHours < 168);
 }
 
 async function getTracksAddedInTheLast24Hours(playlistId) {
@@ -206,34 +206,56 @@ async function updateTracks() {
 }
 
 async function sendNotificationForCurrentTime() {
-    const now = new Date();
-    const currentHour = now.getUTCHours();
+    try {
+        const now = new Date();
+        // const currentHour = now.getUTCHours();
+        const currentHour = "0";
 
-    // Get all devices with current Hour aka preferredNotificationTime
-    const dynamoQueryParam = {
-        TableName: notificationTrackerTableName,
-        IndexName: "preferredNotificationTimeIndex",
-        KeyConditionExpression: "preferredNotificationTime = :time",
-        ExpressionAttributeValues: {
-            ":time": currentHour.toString()
-        }
-    };
-
-    const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
-    const devices = dynamoResponse.Items;
-    for (const currentDevice of devices) {
-        if (currentDevice.watchedPlaylists) {
-            // Get set values and check if at least one playlist has a new song
-            const playlistIdArray = currentDevice.watchedPlaylists.values;
-            if (await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray)) {
-                // Construct request to send notification to currentDevice
-                
-                console.log(`Sent notification to ${currentDevice.deviceId} on ${new Date().toISOString()}`);
+        // Get all devices with current Hour aka preferredNotificationTime
+        const dynamoQueryParam = {
+            TableName: notificationTrackerTableName,
+            IndexName: "preferredNotificationTimeIndex",
+            KeyConditionExpression: "preferredNotificationTime = :time",
+            ExpressionAttributeValues: {
+                ":time": currentHour.toString()
             }
-        }
-        // else don't send, on to the next device
-    }
+        };
 
+        const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
+        const devices = dynamoResponse.Items;
+        for (const currentDevice of devices) {
+            if (currentDevice.watchedPlaylists) {
+                // Get set values and check if at least one playlist has a new song
+                const playlistIdArray = currentDevice.watchedPlaylists.values;
+                if (await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray) && currentDevice.deviceToken) {
+                    // Construct request to send notification to currentDevice
+                    const apnPayload = {
+                      message: "You have a new song to listen to! Open the app and head over to the New song tab to view them.",
+                      deviceToken: currentDevice.deviceToken,
+                      bundleID: "me.borikanes.SongUpdaterQA"
+                    }
+                    const config = {
+                	    method: "POST",
+                	    headers: {
+                	      "Content-Type": "application/json"
+                	    },
+                	    body: JSON.stringify(apnPayload)
+                	}
+                    let res = await fetch('https://ho7won2i0j.execute-api.us-east-1.amazonaws.com/QA/send-notifications', config);
+            		let data = await res.json();
+                    if (data.statusCode === 200) {
+                        console.log(`Sent notification to ${currentDevice.deviceId}`);
+                    } else {
+                        // Figure out what to do here? maybe
+                        console.log(`Notification not sent. Got ${res.status} for ${currentDevice.deviceId}`);
+                    }
+                }
+            }
+            // else don't send, on to the next device
+        }
+    } catch (e) {
+        console.log(`Error while sending Notification ${e.stack}`);
+    }
 }
 
 async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
@@ -272,6 +294,8 @@ exports.handler = async (event) => {
                     console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
                     await addTrackToDynamo(trackItem, currentPlaylistId);
                 }
+                // if there's at least one track
+                await sendNotificationForCurrentTime();
             }
         }
 
