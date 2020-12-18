@@ -79,7 +79,6 @@ async function addItemToPlaylistArrayInS3(playlistId) {
 exports.handler = async (event) => {
     let playlistId;
     // if event is to add playlist
-    // TODO: Don't add duplicate playlist
     if (event.path && event.path === "/playlists/add") {
         try {
             const body = JSON.parse(event.body);

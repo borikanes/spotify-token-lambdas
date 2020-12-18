@@ -68,7 +68,7 @@ function isTimeWithin24Hours(addedAtTimestamp) {
 
     const dateDifferenceInHours = Math.trunc( (now - addedAtTimestampParsed) / 36e5 );
     console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
-    return (dateDifferenceInHours < 168);
+    return (dateDifferenceInHours < 192);
 }
 
 async function getTracksAddedInTheLast24Hours(playlistId) {
@@ -275,10 +275,103 @@ async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
     return false;
 }
 
+// Gets the new tracks of a playlist and puts it in a "track" object
+async function getNewTracks(playlistId) {
+    const tracks = []
+    try {
+        const getPlaylistParams = {
+            TableName: watchedPlaylistsTableName,
+            Key: {playlistId: playlistId}
+        }
+        const data = await documentClient.get(getPlaylistParams).promise();
+        const playlist = data.Item;
+        if (playlist && playlist.trackUUIDs) {
+            // Get plalyist name for curent plalyist
+            const spotifyToken = await fetchSpotifyToken();
+            console.log(spotifyToken);
+            const getPlaylistRequestConfig = {
+              method: 'get',
+              headers: {
+                'Authorization': `Bearer ${spotifyToken}`
+              }
+            };
+
+            // Loop through all tracks
+            const trackUUIDArray = playlist.trackUUIDs.values;
+            for (const trackUUID of trackUUIDArray) {
+                const getTrackParams = {
+                    TableName: songTrackerTableName,
+                    Key: {
+                        id: trackUUID
+                    }
+                }
+
+                const [trackData, playlistResponse] = await Promise.all([documentClient.get(getTrackParams).promise(), fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig)]);
+
+                const track = trackData.Item;
+                console.log(`Current Track ${track}`);
+                // If everything in the promise all is truly successful
+                if (track && playlistResponse.status === 200) {
+                    console.log("In if statement");
+                    const playlistBody = await playlistResponse.json();
+
+                    const trackObjectToReturn = {
+                        title: track.name,
+                        trackId: track.trackId,
+                        artist: track.artist,
+                        songURI: track.uri,
+                        playlistTitle: playlistBody.name
+                    }
+                    tracks.push(trackObjectToReturn)
+                    // TODO: Finished get tracks endpoint. Find a way to test it next
+                }
+                console.log(`TRACK OBJECTS ${tracks}`);
+            }
+        }
+    } catch (e) {
+        console.log(`Some error occured in getNewTracks ${e.stack}`);
+        return []
+    }
+
+    return tracks;
+}
+
 exports.handler = async (event) => {
     try {
+        // Used to get all tracks from all watched playlists
+        if (event.path && event.path === "/tracks/new") {
+            console.log("IN TRACKS NEW");
+            let response = {
+                headers: {
+                    "Content-Type": "application/json"
+                }
+            }
+            const header = event.headers;
+            const deviceIdFromRequest = header["device-id"];
+            const getParams = {
+                TableName: notificationTrackerTableName,
+                Key: {deviceId: deviceIdFromRequest}
+            }
+            const data = await documentClient.get(getParams).promise();
+            const device = data.Item;
+            if (!device.watchedPlaylists) {
+                response.statusCode = 404; // Returning not found if there are no watched Playlists. Basically a hack and easier for the front end to parse
+            } else {
+                response.statusCode = 200;
+                const playlistIdArray = device.watchedPlaylists.values;
+                let tracks = []
+                for (const playlistId of playlistIdArray) {
+                    const currentTracks = await getNewTracks(playlistId);
+                    tracks.push(...currentTracks)
+                }
+                response.body = JSON.stringify(tracks)
+            }
+            return response;
+        }
+
         // Update Playlist and Tracks tables by removing tracks over 24 hours
         await updateTracks();
+        console.log("Passed update tracks");
 
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
@@ -300,7 +393,7 @@ exports.handler = async (event) => {
         }
 
     } catch (e) {
-        console.log(`Some error occured => ${e.stack}`);
+        console.log(`Some error occured in main handler => ${e.stack}`);
         throw e;
     }
 
