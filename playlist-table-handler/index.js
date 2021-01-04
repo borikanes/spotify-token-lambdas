@@ -7,10 +7,21 @@ const documentClient = new AWS.DynamoDB.DocumentClient();
 // S3 config
 const s3 = new AWS.S3();
 
-const playlistTableName = "WatchedPlaylists";
-const songTrackerTableName = "SongTrackMapper";
+var playlistTableName = "WatchedPlaylists";
+var songTrackerTableName = "SongTrackMapper";
 const resourceBucket = "song-updater-resources";
-const playlistFileKey = "playlists.json";
+var playlistFileKey = "playlists.json";
+
+function setGlobalVariables(stageVariables) {
+    if (stageVariables && stageVariables.environment === 'qa') {
+        console.log('===================== Setting QA environment =====================');
+        playlistTableName = "WatchedPlaylistsQA";
+        songTrackerTableName = "SongTrackMapperQA";
+        playlistFileKey = "playlists-qa.json";
+
+        return;
+    }
+}
 
 async function removeItemFromArrayInS3(item) {
     try {
@@ -77,6 +88,11 @@ async function addItemToPlaylistArrayInS3(playlistId) {
 }
 
 exports.handler = async (event) => {
+    // Set variables based on environment on
+    console.log(JSON.stringify(event));
+    console.log(JSON.stringify(event.stageVariables));
+    setGlobalVariables(event.stageVariables);
+    console.log(`TableName=======> ${playlistTableName}`);
     let playlistId;
     // if event is to add playlist
     if (event.path && event.path === "/playlists/add") {
@@ -95,6 +111,7 @@ exports.handler = async (event) => {
                 },
                 ConditionExpression: 'attribute_not_exists(playlistId)'
             }
+            
             const dynamoResponse = await documentClient.put(dynamoPutParams).promise();
 
             await addItemToPlaylistArrayInS3(playlistId);
@@ -158,6 +175,7 @@ exports.handler = async (event) => {
                 } else { // remove playlistId totally from dynamo. Really not needed since it'll be gone in 24hours
                     // Get rid of all trackUUIDs first
                     if (playlistItem.Item.trackUUIDs) {
+                        console.log(`Deleting track UUIDs for playlist => ${playlistId}`);
                         console.log("==============Starting to delete trackUUIDs=============");
                         const trackUUIDs = playlistItem.Item.trackUUIDs.values;
                         for (const currentTrack of trackUUIDs) {
@@ -176,8 +194,7 @@ exports.handler = async (event) => {
                         TableName: playlistTableName,
                         Key: {playlistId: playlistId}
                     }
-                    const deletedData = await documentClient.delete(deletePlaylistParams).promise();
-                    await removeItemFromArrayInS3(playlistId);
+                    const [deletedData, deleteFromS3Data] = await Promise.all([documentClient.delete(deletePlaylistParams).promise(), removeItemFromArrayInS3(playlistId)]);
                 }
             } else {
                 // Something is def wrong, there should be watchCount

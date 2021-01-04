@@ -4,11 +4,11 @@ const qs = require('qs');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid'); // uuidv4()
 
-const notificationTrackerTableName = "NotificationTracker";
-const watchedPlaylistsTableName = "WatchedPlaylists";
-const resourceBucket = "song-updater-resources";
-const playlistFileKey = "playlists.json";
-const songTrackerTableName = "SongTrackMapper";
+var notificationTrackerTableName = "NotificationTracker";
+var watchedPlaylistsTableName = "WatchedPlaylists";
+var resourceBucket = "song-updater-resources";
+var playlistFileKey = "playlists.json";
+var songTrackerTableName = "SongTrackMapper";
 const spotifyBaseURL = "https://api.spotify.com/v1";
 
 AWS.config.update({region: 'us-east-1'});
@@ -17,6 +17,17 @@ const s3 = new AWS.S3();
 
 // Allows me to get the next hour from current UTC time
 
+function setGlobalVariables(stageVariables) {
+    if (stageVariables && stageVariables.environment === 'qa') {
+        console.log('===================== Setting QA environment =====================');
+        notificationTrackerTableName = "NotificationTrackerQA";
+        watchedPlaylistsTableName = "WatchedPlaylistsQA";
+        playlistFileKey = "playlists-qa.json";
+        songTrackerTableName = "SongTrackMapperQA";
+
+        return;
+    }
+}
 
 async function fetchSpotifyToken() {
     let config = {
@@ -53,6 +64,7 @@ async function getPlaylistArrayFromS3() {
         }
         const data = await s3.getObject(getParams).promise();
         const jsonString = data.Body.toString('utf-8');
+        console.log(`playlistArray jsonString from S3 ${jsonString}`);
         const playlistDictionary = JSON.parse(jsonString);
         return Object.keys(playlistDictionary);
     } catch (e) {
@@ -67,8 +79,8 @@ function isTimeWithin24Hours(addedAtTimestamp) {
     const addedAtTimestampParsed = Date.parse(addedAtTimestamp);
 
     const dateDifferenceInHours = Math.trunc( (now - addedAtTimestampParsed) / 36e5 );
-    console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
-    return (dateDifferenceInHours < 192);
+    // console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
+    return (dateDifferenceInHours < 24);
 }
 
 async function getTracksAddedInTheLast24Hours(playlistId) {
@@ -109,7 +121,10 @@ async function addTrackToDynamo(trackItem, playlistId) {
     const trackUUID = uuidv4();
     const timeInUTC = new Date().toISOString();
 
+    console.log(`TrackItem => ${JSON.stringify(trackItem)}`);
+    if (true) {
 
+    }
     const dynamoTrackPutParams = {
         TableName: songTrackerTableName,
         Item: {
@@ -140,7 +155,7 @@ async function addTrackToDynamo(trackItem, playlistId) {
 async function updateTracks() {
     // get s3 array
     const playlistArray = await getPlaylistArrayFromS3();
-    // console.log(`Array ============= ${playlistArray}`);
+    console.log(`Array ============= ${JSON.stringify(playlistArray)}`);
 
     for (const currentPlaylist of playlistArray) {
         // console.log("=============In FOR OF=============");
@@ -153,6 +168,7 @@ async function updateTracks() {
             const playlist = data.Item;
 
             if (playlist.trackUUIDs) { // If current playlist has trackUUID array
+                console.log(`IN if statement for ${currentPlaylist}`);
                 let trackUUIDs = playlist.trackUUIDs.values; // get object from string set
                 for (const trackUUID of trackUUIDs) {
                     console.log("==============Inner FOR LOOP=============");
@@ -208,8 +224,9 @@ async function updateTracks() {
 async function sendNotificationForCurrentTime() {
     try {
         const now = new Date();
-        // const currentHour = now.getUTCHours();
-        const currentHour = "0";
+        const currentHour = now.getUTCHours();
+        console.log(`Sending notifications to devices on ${currentHour.toString()} UTC time`);
+        // const currentHour = "0";
 
         // Get all devices with current Hour aka preferredNotificationTime
         const dynamoQueryParam = {
@@ -227,7 +244,10 @@ async function sendNotificationForCurrentTime() {
             if (currentDevice.watchedPlaylists) {
                 // Get set values and check if at least one playlist has a new song
                 const playlistIdArray = currentDevice.watchedPlaylists.values;
-                if (await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray) && currentDevice.deviceToken) {
+                const isThereNewTrack = await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray);
+                console.log(`About to get into await if statement. isThereNewTrack is ${isThereNewTrack}`);
+                if (isThereNewTrack && currentDevice.deviceToken) {
+                    console.log(`Creating APN payload for ${currentDevice.deviceToken}`);
                     // Construct request to send notification to currentDevice
                     const apnPayload = {
                       message: "You have a new song to listen to! Open the app and head over to the New song tab to view them.",
@@ -271,13 +291,13 @@ async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
             return true;
         }
     }
-
+    console.log(`Returning false on playlistArray ${playlistArray} in doesAtLeastOnePlaylistHaveNewTrack`);
     return false;
 }
 
 // Gets the new tracks of a playlist and puts it in a "track" object
 async function getNewTracks(playlistId) {
-    const tracks = []
+    let newTracks = []
     try {
         const getPlaylistParams = {
             TableName: watchedPlaylistsTableName,
@@ -309,10 +329,8 @@ async function getNewTracks(playlistId) {
                 const [trackData, playlistResponse] = await Promise.all([documentClient.get(getTrackParams).promise(), fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig)]);
 
                 const track = trackData.Item;
-                console.log(`Current Track ${track}`);
                 // If everything in the promise all is truly successful
                 if (track && playlistResponse.status === 200) {
-                    console.log("In if statement");
                     const playlistBody = await playlistResponse.json();
 
                     const trackObjectToReturn = {
@@ -322,25 +340,42 @@ async function getNewTracks(playlistId) {
                         songURI: track.uri,
                         playlistTitle: playlistBody.name
                     }
-                    tracks.push(trackObjectToReturn)
-                    // TODO: Finished get tracks endpoint. Find a way to test it next
+                    newTracks.push(trackObjectToReturn);
                 }
-                console.log(`TRACK OBJECTS ${tracks}`);
+                // console.log(`TRACK OBJECTS ${newTracks}`);
             }
         }
     } catch (e) {
         console.log(`Some error occured in getNewTracks ${e.stack}`);
-        return []
+        return [];
     }
+    newTracks = removeDuplicatesFromTrackArray(newTracks);
+    return newTracks;
+}
 
-    return tracks;
+// Removes duplicate tracks from getNewTracks response
+function removeDuplicatesFromTrackArray(trackArray) {
+    if (trackArray.length === 0) {
+        return [];
+    }
+    // else
+    let duplicateCheckerSet = new Set();
+    let uniqueTrackArray = [];
+    for (const track of trackArray) {
+        if (track.trackId && !duplicateCheckerSet.has(track.trackId)) {
+            duplicateCheckerSet.add(track.trackId);
+            uniqueTrackArray.push(track);
+        }
+    }
+    return uniqueTrackArray;
 }
 
 exports.handler = async (event) => {
+    // Set variables based on environment
+    setGlobalVariables(event.stageVariables);
     try {
         // Used to get all tracks from all watched playlists
         if (event.path && event.path === "/tracks/new") {
-            console.log("IN TRACKS NEW");
             let response = {
                 headers: {
                     "Content-Type": "application/json"
@@ -371,12 +406,14 @@ exports.handler = async (event) => {
 
         // Update Playlist and Tracks tables by removing tracks over 24 hours
         await updateTracks();
-        console.log("Passed update tracks");
 
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
         // const playlists = ["6omtoYWO4IMVgUNF0vNI8L"]; // test
         console.log(playlists);
+
+        // Tracks to see if notification should be sent
+        let shouldSendNotificationCounter = 0;
         for (const currentPlaylistId of playlists) {
             console.log(`========>${currentPlaylistId}<========`);
             // Get spotify Token
@@ -385,13 +422,19 @@ exports.handler = async (event) => {
             if (tracks.length > 0) { // IF there's at least one track
                 for (const trackItem of tracks) {
                     console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
-                    await addTrackToDynamo(trackItem, currentPlaylistId);
+                    if (trackItem.track) {
+                        // putting this counter here to ensure there indeed is at least one track added to dynamo, that will be shown to the user when they click on the notification
+                        shouldSendNotificationCounter += 1;
+                        await addTrackToDynamo(trackItem, currentPlaylistId);
+                    }
                 }
-                // if there's at least one track
-                await sendNotificationForCurrentTime();
             }
         }
 
+        if (shouldSendNotificationCounter > 0) {
+            console.log(`Sending notification............`);
+            await sendNotificationForCurrentTime();
+        }
     } catch (e) {
         console.log(`Some error occured in main handler => ${e.stack}`);
         throw e;
