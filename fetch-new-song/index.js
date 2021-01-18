@@ -4,11 +4,13 @@ const qs = require('qs');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid'); // uuidv4()
 
-var notificationTrackerTableName = "NotificationTracker";
-var watchedPlaylistsTableName = "WatchedPlaylists";
+var notificationTrackerTableName = process.env.NOTIFICATION_TRACKER_TABLE ? process.env.NOTIFICATION_TRACKER_TABLE : "NotificationTracker";
+var watchedPlaylistsTableName = process.env.WATCHED_PLAYLISTS_TABLE ? process.env.WATCHED_PLAYLISTS_TABLE : "WatchedPlaylists";
 var resourceBucket = "song-updater-resources";
-var playlistFileKey = "playlists.json";
-var songTrackerTableName = "SongTrackMapper";
+var playlistFileKey = process.env.PLAYLIST_FILE_KEY ? process.env.PLAYLIST_FILE_KEY : "playlists.json";
+var songTrackerTableName = process.env.SONG_TRACKER_TABLE ? process.env.SONG_TRACKER_TABLE : "SongTrackMapper";
+var environmentFromStageVariable = "";
+
 const spotifyBaseURL = "https://api.spotify.com/v1";
 
 AWS.config.update({region: 'us-east-1'});
@@ -221,7 +223,7 @@ async function updateTracks() {
     }
 }
 
-async function sendNotificationForCurrentTime() {
+async function sendNotificationForCurrentTimeIfNeeded() {
     try {
         const now = new Date();
         const currentHour = now.getUTCHours();
@@ -252,7 +254,7 @@ async function sendNotificationForCurrentTime() {
                     const apnPayload = {
                       message: "You have a new song to listen to! Open the app and head over to the New song tab to view them.",
                       deviceToken: currentDevice.deviceToken,
-                      bundleID: "me.borikanes.SongUpdaterQA"
+                      bundleID: (environmentFromStageVariable === 'qa') ? "me.borikanes.SongUpdaterQA" : "me.borikanes.SongUpdater"
                     }
                     const config = {
                 	    method: "POST",
@@ -373,6 +375,7 @@ function removeDuplicatesFromTrackArray(trackArray) {
 exports.handler = async (event) => {
     // Set variables based on environment
     setGlobalVariables(event.stageVariables);
+    environmentFromStageVariable = event.stageVariables;
     try {
         // Used to get all tracks from all watched playlists
         if (event.path && event.path === "/tracks/new") {
@@ -407,13 +410,15 @@ exports.handler = async (event) => {
         // Update Playlist and Tracks tables by removing tracks over 24 hours
         await updateTracks();
 
+        // get
+
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
         // const playlists = ["6omtoYWO4IMVgUNF0vNI8L"]; // test
         console.log(playlists);
 
         // Tracks to see if notification should be sent
-        let shouldSendNotificationCounter = 0;
+        // let shouldSendNotificationCounter = 0;
         for (const currentPlaylistId of playlists) {
             console.log(`========>${currentPlaylistId}<========`);
             // Get spotify Token
@@ -424,17 +429,19 @@ exports.handler = async (event) => {
                     console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
                     if (trackItem.track) {
                         // putting this counter here to ensure there indeed is at least one track added to dynamo, that will be shown to the user when they click on the notification
-                        shouldSendNotificationCounter += 1;
+                        // shouldSendNotificationCounter += 1;
                         await addTrackToDynamo(trackItem, currentPlaylistId);
                     }
                 }
             }
         }
+        console.log(`Calling send notification for current time............`);
+        await sendNotificationForCurrentTimeIfNeeded();
 
-        if (shouldSendNotificationCounter > 0) {
-            console.log(`Sending notification............`);
-            await sendNotificationForCurrentTime();
-        }
+        // if (shouldSendNotificationCounter > 0) {
+        //
+        //     shouldSendNotificationCounter = 0;
+        // }
     } catch (e) {
         console.log(`Some error occured in main handler => ${e.stack}`);
         throw e;
