@@ -124,9 +124,7 @@ async function addTrackToDynamo(trackItem, playlistId) {
     const timeInUTC = new Date().toISOString();
 
     console.log(`TrackItem => ${JSON.stringify(trackItem)}`);
-    if (true) {
 
-    }
     const dynamoTrackPutParams = {
         TableName: songTrackerTableName,
         Item: {
@@ -138,8 +136,11 @@ async function addTrackToDynamo(trackItem, playlistId) {
             artist: trackItem.track.artists[0].name // For now just return the first artist??
         },
     };
-    await documentClient.put(dynamoTrackPutParams).promise();
-
+    console.log(`About to add song uuid to Song Tracker Table`);
+    const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
+    console.log(`Update Song Tracker param ${JSON.stringify(dynamoTrackPutParams)}`);
+    console.log(`Added song to Song Tracker Table`);
+    console.log(`Update Song Tracker response ${JSON.stringify(updateSongTrackerResponse)}`);
     // Add uuid to playlist
     const updatePlaylistWithTrackParam = {
         TableName: watchedPlaylistsTableName,
@@ -150,7 +151,32 @@ async function addTrackToDynamo(trackItem, playlistId) {
             ":timestamp": timeInUTC
         }
     }
-    await documentClient.update(updatePlaylistWithTrackParam).promise();
+    const updateSetResponse = await documentClient.update(updatePlaylistWithTrackParam).promise();
+    console.log(`Update param: ${JSON.stringify(updatePlaylistWithTrackParam)}`);
+    console.log(`Update response ${JSON.stringify(updateSetResponse)}`);
+    console.log(`Added ${trackUUID} to WatchedPlaylists Table`);
+}
+
+async function deleteSongUUIDFromPlaylistAndSongTable(trackUUID, currentPlaylist) {
+    const deleteTrackParams = {
+        TableName: songTrackerTableName,
+        Key: {id: trackUUID}
+    }
+    const deletedData = await documentClient.delete(deleteTrackParams).promise();
+
+    // Remove trackUUID from playlist table
+    console.log(`==================REMOVING TRACK ${trackUUID} FROM SET==================`);
+    const currentTimePlaylistTable = new Date().toISOString();
+    const dynamoUpdateParams = {
+        TableName: watchedPlaylistsTableName,
+        Key: {playlistId: currentPlaylist},
+        UpdateExpression: 'set lastModifiedTimestamp = :timestamp DELETE trackUUIDs :currentTrackUUID',
+        ExpressionAttributeValues: {
+            ":currentTrackUUID": documentClient.createSet([trackUUID]), // To remove an item from a set, you have to specify the item and encapsulate it in a set. createSet takes a list hence why [] is wrapped around the trackUUID needed to be deleted
+            ":timestamp": currentTimePlaylistTable
+        }
+    }
+    const dynamoDeleteResponse = await documentClient.update(dynamoUpdateParams).promise();
 }
 
 // Method to update tracks on playlist AND tracks tables
@@ -173,44 +199,43 @@ async function updateTracks() {
                 console.log(`IN if statement for ${currentPlaylist}`);
                 let trackUUIDs = playlist.trackUUIDs.values; // get object from string set
                 for (const trackUUID of trackUUIDs) {
-                    console.log("==============Inner FOR LOOP=============");
-                    console.log(`==============Current Track ${trackUUID}=============`);
-                    const dynamoTrackGetParams = {
-                        TableName: songTrackerTableName,
-                        Key: {id: trackUUID}
-                    };
-                    const trackData = await documentClient.get(dynamoTrackGetParams).promise();
-                    const track = trackData.Item;
-
-                    const lastModifiedTimestamp = track.lastModifiedTimestamp;
-                    // compare time - https://stackoverflow.com/a/19225540/2620826
-                    const lastModifiedTimestampParsedDate = Date.parse(lastModifiedTimestamp);
-                    const timeWithin24Hours = isTimeWithin24Hours(lastModifiedTimestampParsedDate);
-                    if (!timeWithin24Hours) { // If the song has been in the table for over 24hrs, delete
-                        const deleteTrackParams = {
+                    try {
+                        console.log("==============Inner FOR LOOP=============");
+                        console.log(`==============Current Track ${trackUUID}=============`);
+                        const dynamoTrackGetParams = {
                             TableName: songTrackerTableName,
                             Key: {id: trackUUID}
-                        }
-                        const deletedData = await documentClient.delete(deleteTrackParams).promise();
-
-                        // Remove trackUUID from playlist table
-                        console.log(`==================REMOVING TRACK ${trackUUID} FROM SET==================`);
-                        const currentTimePlaylistTable = new Date().toISOString();
-                        const dynamoUpdateParams = {
-                            TableName: watchedPlaylistsTableName,
-                            Key: {playlistId: currentPlaylist},
-                            UpdateExpression: 'set lastModifiedTimestamp = :timestamp DELETE trackUUIDs :currentTrackUUID',
-                            ExpressionAttributeValues: {
-                                ":currentTrackUUID": documentClient.createSet([trackUUID]), // To remove an item from a set, you have to specify the item and encapsulate it in a set. createSet takes a list hence why [] is wrapped around the trackUUID needed to be deleted
-                                ":timestamp": currentTimePlaylistTable
+                        };
+                        const trackData = await documentClient.get(dynamoTrackGetParams).promise();
+                        const track = trackData.Item;
+                        if (!track) { // re-think this and consolidate since it's similar to deleteSongUUIDFromPlaylistAndSongTable
+                            console.log(`==================REMOVING TRACK ${trackUUID} FROM SET==================`);
+                            const currentTimePlaylistTable = new Date().toISOString();
+                            const dynamoUpdateParams = {
+                                TableName: watchedPlaylistsTableName,
+                                Key: {playlistId: currentPlaylist},
+                                UpdateExpression: 'set lastModifiedTimestamp = :timestamp DELETE trackUUIDs :currentTrackUUID',
+                                ExpressionAttributeValues: {
+                                    ":currentTrackUUID": documentClient.createSet([trackUUID]), // To remove an item from a set, you have to specify the item and encapsulate it in a set. createSet takes a list hence why [] is wrapped around the trackUUID needed to be deleted
+                                    ":timestamp": currentTimePlaylistTable
+                                }
+                            }
+                            const dynamoDeleteResponse = await documentClient.update(dynamoUpdateParams).promise();
+                        } else {
+                            const lastModifiedTimestamp = track.lastModifiedTimestamp;
+                            // compare time - https://stackoverflow.com/a/19225540/2620826
+                            const lastModifiedTimestampParsedDate = Date.parse(lastModifiedTimestamp);
+                            const timeWithin24Hours = isTimeWithin24Hours(lastModifiedTimestampParsedDate);
+                            if (!timeWithin24Hours) { // If the song has been in the table for over 24hrs, delete
+                                await deleteSongUUIDFromPlaylistAndSongTable(trackUUID, currentPlaylist);
+                            } else { // don't do anything
+                                console.log(`Time dateDifferenceInHours => ===== ${dateDifferenceInHours}`);
                             }
                         }
-                        const dynamoDeleteResponse = await documentClient.update(dynamoUpdateParams).promise();
-
-                    } else { // don't do anything
-                        console.log(`Time dateDifferenceInHours => ===== ${dateDifferenceInHours}`);
+                        console.log(`==============Done with ${trackUUID}=============`);
+                    } catch (e) { // Doing this so that if something doesn't exists and/or throws error, for some reason, it continues to the next one
+                        console.log(`Error in inner trackUUID for loop to update song UUIDs for track ${trackUUID} in Playlist: ${currentPlaylist}`);
                     }
-                    console.log(`==============Done with ${trackUUID}=============`);
                 }
             } else {
                 // No new song
@@ -234,9 +259,10 @@ async function sendNotificationForCurrentTimeIfNeeded() {
         const dynamoQueryParam = {
             TableName: notificationTrackerTableName,
             IndexName: "preferredNotificationTimeIndex",
-            KeyConditionExpression: "preferredNotificationTime = :time",
+            KeyConditionExpression: "preferredNotificationTime = :time and stopNotification = :stopNotificationBooleanString",
             ExpressionAttributeValues: {
-                ":time": currentHour.toString()
+                ":time": currentHour.toString(),
+                ":stopNotificationBooleanString": "false"
             }
         };
 
@@ -373,12 +399,15 @@ function removeDuplicatesFromTrackArray(trackArray) {
 }
 
 exports.handler = async (event) => {
+    console.log(`Top of event`);
     // Set variables based on environment
     setGlobalVariables(event.stageVariables);
+    console.log(`After Setting global variable`);
     environmentFromStageVariable = event.stageVariables;
     try {
         // Used to get all tracks from all watched playlists
         if (event.path && event.path === "/tracks/new") {
+            console.log(`In tracks New`);
             let response = {
                 headers: {
                     "Content-Type": "application/json"
@@ -386,31 +415,36 @@ exports.handler = async (event) => {
             }
             const header = event.headers;
             const deviceIdFromRequest = header["device-id"];
+            console.log(`Device Id in track New`);
             const getParams = {
                 TableName: notificationTrackerTableName,
                 Key: {deviceId: deviceIdFromRequest}
             }
+            console.log(`New Tracks before get deviceId`);
+            console.log(`Get params: ${JSON.stringify(getParams)}`);
             const data = await documentClient.get(getParams).promise();
+            console.log(`New Tracks after get deviceId`);
             const device = data.Item;
             if (!device.watchedPlaylists) {
                 response.statusCode = 404; // Returning not found if there are no watched Playlists. Basically a hack and easier for the front end to parse
             } else {
                 response.statusCode = 200;
                 const playlistIdArray = device.watchedPlaylists.values;
+                console.log(`Playlist Array in New: ${playlistIdArray}`);
                 let tracks = []
                 for (const playlistId of playlistIdArray) {
                     const currentTracks = await getNewTracks(playlistId);
+                    console.log(`Tracks in New ${currentTracks}`);
                     tracks.push(...currentTracks)
                 }
                 response.body = JSON.stringify(tracks)
             }
+            console.log(`New tracks Response ${response.body}`);
             return response;
         }
 
         // Update Playlist and Tracks tables by removing tracks over 24 hours
         await updateTracks();
-
-        // get
 
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
