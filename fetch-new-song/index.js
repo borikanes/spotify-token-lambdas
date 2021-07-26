@@ -259,7 +259,8 @@ async function sendNotificationForCurrentTimeIfNeeded() {
         const dynamoQueryParam = {
             TableName: notificationTrackerTableName,
             IndexName: "preferredNotificationTimeIndex",
-            KeyConditionExpression: "preferredNotificationTime = :time and stopNotification = :stopNotificationBooleanString",
+            KeyConditionExpression: "preferredNotificationTime = :time",
+            FilterExpression: "stopNotification = :stopNotificationBooleanString",
             ExpressionAttributeValues: {
                 ":time": currentHour.toString(),
                 ":stopNotificationBooleanString": "false"
@@ -289,7 +290,8 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 	    },
                 	    body: JSON.stringify(apnPayload)
                 	}
-                    let res = await fetch('https://ho7won2i0j.execute-api.us-east-1.amazonaws.com/QA/send-notifications', config);
+                    const environmentForURL = (environmentFromStageVariable === 'qa') ? "QA" : "prod"
+                    let res = await fetch(`https://ho7won2i0j.execute-api.us-east-1.amazonaws.com/${environmentForURL}/send-notifications`, config);
             		let data = await res.json();
                     if (data.statusCode === 200) {
                         console.log(`Sent notification to ${currentDevice.deviceId}`);
