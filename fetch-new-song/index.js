@@ -10,26 +10,13 @@ var resourceBucket = "song-updater-resources";
 var playlistFileKey = process.env.PLAYLIST_FILE_KEY ? process.env.PLAYLIST_FILE_KEY : "playlists.json";
 var songTrackerTableName = process.env.SONG_TRACKER_TABLE ? process.env.SONG_TRACKER_TABLE : "SongTrackMapper";
 var environmentFromStageVariable = "";
+const ONE_DAY_IN_MILLISECONDS = 86400;
 
 const spotifyBaseURL = "https://api.spotify.com/v1";
 
 AWS.config.update({region: 'us-east-1'});
 const documentClient = new AWS.DynamoDB.DocumentClient();
 const s3 = new AWS.S3();
-
-// Allows me to get the next hour from current UTC time
-
-function setGlobalVariables(stageVariables) {
-    if (stageVariables && stageVariables.environment === 'qa') {
-        console.log('===================== Setting QA environment =====================');
-        notificationTrackerTableName = "NotificationTrackerQA";
-        watchedPlaylistsTableName = "WatchedPlaylistsQA";
-        playlistFileKey = "playlists-qa.json";
-        songTrackerTableName = "SongTrackMapperQA";
-
-        return;
-    }
-}
 
 async function fetchSpotifyToken() {
     let config = {
@@ -85,8 +72,7 @@ function isTimeWithin24Hours(addedAtTimestamp) {
     return (dateDifferenceInHours < 24);
 }
 
-async function getTracksAddedInTheLast24Hours(playlistId) {
-    const spotifyToken = await fetchSpotifyToken();
+async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
     console.log(spotifyToken);
     let newTracksArray = []
     const getPlaylistRequestConfig = {
@@ -95,10 +81,10 @@ async function getTracksAddedInTheLast24Hours(playlistId) {
         'Authorization': `Bearer ${spotifyToken}`
       }
     };
-    const response = await fetch(`${spotifyBaseURL}/playlists/${playlistId}/tracks`, getPlaylistRequestConfig);
+    const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}/tracks`, getPlaylistRequestConfig);
     let playlistResponse;
-    if (response.status === 200) {
-        playlistResponse = await response.json();
+    if (fetchTracksResponse.status === 200) {
+        playlistResponse = await fetchTracksResponse.json();
         let items = playlistResponse.items;
         // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
         newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
@@ -116,15 +102,28 @@ async function getTracksAddedInTheLast24Hours(playlistId) {
 
 // TODO: Use Batch write Item eventually?
 // writes the new track to the playlist and track table with new songs in last 24 hoours
-async function addTrackToDynamo(trackItem, playlistId) {
+async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
     console.log(`In Add track to Dynamo`);
     // generate uuid for track and add to current playlist on WatchedPlaylists table
     // push song info with uuid
     const trackUUID = uuidv4();
-    const timeInUTC = new Date().toISOString();
+    const now = new Date();
+    const twentyFourHoursLater = Date.parse(new Date(now.setHours(now.getHours() + 24))) / 1000;
+    const timeInUTC = now.toISOString();
 
     console.log(`TrackItem => ${JSON.stringify(trackItem)}`);
 
+    // Fetch playlist title
+    const getPlaylistRequestConfig = {
+      method: 'get',
+      headers: {
+        'Authorization': `Bearer ${spotifyToken}`
+      }
+    };
+    const playlistResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig);
+    const playlistBody = await playlistResponse.json();
+
+    // Add data to song table
     const dynamoTrackPutParams = {
         TableName: songTrackerTableName,
         Item: {
@@ -133,14 +132,14 @@ async function addTrackToDynamo(trackItem, playlistId) {
             trackId: trackItem.track.id,
             uri: trackItem.track.uri,
             name: trackItem.track.name,
-            artist: trackItem.track.artists[0].name // For now just return the first artist??
+            artist: trackItem.track.artists[0].name, // For now just return the first artist??
+            ttl: twentyFourHoursLater,
+            playlistId: playlistId,
+            playlistTitle: playlistBody.name
         },
     };
     console.log(`About to add song uuid to Song Tracker Table`);
     const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
-    console.log(`Update Song Tracker param ${JSON.stringify(dynamoTrackPutParams)}`);
-    console.log(`Added song to Song Tracker Table`);
-    console.log(`Update Song Tracker response ${JSON.stringify(updateSongTrackerResponse)}`);
     // Add uuid to playlist
     const updatePlaylistWithTrackParam = {
         TableName: watchedPlaylistsTableName,
@@ -179,9 +178,8 @@ async function deleteSongUUIDFromPlaylistAndSongTable(trackUUID, currentPlaylist
     const dynamoDeleteResponse = await documentClient.update(dynamoUpdateParams).promise();
 }
 
-async function updateTrackInDynamo(trackUUID) {
+async function updateTrackOnSongTable(trackUUID) {
     try {
-        console.log("==============Inner FOR LOOP=============");
         console.log(`==============Current Track ${trackUUID}=============`);
         const dynamoTrackGetParams = {
             TableName: songTrackerTableName,
@@ -208,6 +206,7 @@ async function updateTrackInDynamo(trackUUID) {
             const lastModifiedTimestampParsedDate = Date.parse(lastModifiedTimestamp);
             const timeWithin24Hours = isTimeWithin24Hours(lastModifiedTimestampParsedDate);
             if (!timeWithin24Hours) { // If the song has been in the table for over 24hrs, delete
+                console.log(`=================Deleting ${trackUUID}....=================`);
                 await deleteSongUUIDFromPlaylistAndSongTable(trackUUID, currentPlaylist);
             } else { // don't do anything
                 console.log(`Time dateDifferenceInHours => ===== ${dateDifferenceInHours}`);
@@ -219,7 +218,7 @@ async function updateTrackInDynamo(trackUUID) {
     }
 }
 
-async function updateTracksHelper(currentPlaylist) {
+async function updateTracksDynamoOperations(currentPlaylist) {
     try {
         const dynamoGetParams = {
             TableName: watchedPlaylistsTableName,
@@ -233,7 +232,7 @@ async function updateTracksHelper(currentPlaylist) {
             let trackUUIDs = playlist.trackUUIDs.values; // get object from string set
             let updateTrackInDynamoFunctionCalls = [];
             for (const trackUUID of trackUUIDs) {
-                updateTrackInDynamoFunctionCalls.push(updateTrackInDynamo(trackUUID));
+                updateTrackInDynamoFunctionCalls.push(updateTrackOnSongTable(trackUUID));
             }
             await Promise.all(updateTrackInDynamoFunctionCalls);
         } else {
@@ -246,14 +245,12 @@ async function updateTracksHelper(currentPlaylist) {
 }
 
 // Method to update tracks on playlist AND tracks tables
-async function updateTracks() {
-    // get s3 array
-    const playlistArray = await getPlaylistArrayFromS3();
+async function updateTracks(playlistArray) {
     console.log(`Array ============= ${JSON.stringify(playlistArray)}`);
     let updatePlaylistHelperFunctionCalls = [];
     for (const currentPlaylist of playlistArray) {
         // console.log("=============In FOR OF=============");
-        updatePlaylistHelperFunctionCalls.push(updateTracksHelper(currentPlaylist));
+        updatePlaylistHelperFunctionCalls.push(updateTracksDynamoOperations(currentPlaylist));
     }
     await Promise.all(updatePlaylistHelperFunctionCalls);
 }
@@ -285,7 +282,7 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 const playlistIdArray = currentDevice.watchedPlaylists.values;
                 const isThereNewTrack = await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray);
                 console.log(`About to get into await if statement. isThereNewTrack is ${isThereNewTrack}`);
-                if (isThereNewTrack && currentDevice.deviceToken) {
+                if (isThereNewTrack === true && currentDevice.deviceToken) {
                     console.log(`Creating APN payload for ${currentDevice.deviceToken}`);
                     // Construct request to send notification to currentDevice
                     const apnPayload = {
@@ -336,6 +333,7 @@ async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
 }
 
 async function fetchTrackFromSpotifyAndConstructTrackObject(trackUUID, playlistId, getPlaylistRequestConfig) {
+    console.log(`In fetch Track from spotify`);
     const getTrackParams = {
         TableName: songTrackerTableName,
         Key: {
@@ -365,15 +363,18 @@ async function fetchTrackFromSpotifyAndConstructTrackObject(trackUUID, playlistI
 
 // Gets the new tracks of a playlist and puts it in a "track" object
 async function getNewTracks(playlistId) {
+    console.log(`Playlist getting new tracks for =====> ${playlistId}`);
     let newTracks = []
     try {
         const getPlaylistParams = {
             TableName: watchedPlaylistsTableName,
             Key: {playlistId: playlistId}
         }
+        console.log(`Dynamo Param ====> ${JSON.stringify(getPlaylistParams)}`);
         const data = await documentClient.get(getPlaylistParams).promise();
         const playlist = data.Item;
         if (playlist && playlist.trackUUIDs) {
+            console.log(`Playlist has Track UUIDS`);
             // Get plalyist name for curent plalyist
             const spotifyToken = await fetchSpotifyToken();
             console.log(spotifyToken);
@@ -388,11 +389,13 @@ async function getNewTracks(playlistId) {
             const trackUUIDArray = playlist.trackUUIDs.values;
             let getNewTracksHelperCalls = [];
             for (const trackUUID of trackUUIDArray) {
+                console.log(`In track uuid array for loop`);
                 getNewTracksHelperCalls.push(fetchTrackFromSpotifyAndConstructTrackObject(trackUUID, playlistId, getPlaylistRequestConfig));
             }
 
             const trackResponse = await Promise.all(getNewTracksHelperCalls);
-            const filteredTrackResponse = trackResponse.filter(trackOject => Object.keys(trackOject).length !== 0)
+            console.log(`TRACK RESPONSE => ${JSON.stringify(trackResponse)}`);
+            const filteredTrackResponse = trackResponse.filter(trackObject => Object.keys(trackObject).length !== 0)
             newTracks = filteredTrackResponse
         }
     } catch (e) {
@@ -401,6 +404,40 @@ async function getNewTracks(playlistId) {
     }
     newTracks = removeDuplicatesFromTrackArray(newTracks);
     return newTracks;
+}
+
+async function getNewTracksImproved(playlistId) {
+    try {
+        let songTrackerTableQueryParam = {
+            TableName: songTrackerTableName,
+            IndexName: "playlistId-index",
+            KeyConditionExpression: "playlistId = :playlistId",
+            ExpressionAttributeValues: {
+                ":playlistId": playlistId
+            }
+        };
+
+        const trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
+        const tracks = trackResponse.Items;
+        let newTracks = [];
+        console.log(`Query Result ${JSON.stringify(trackResponse)}`);
+        console.log(`Query ITEM Result ${JSON.stringify(tracks)}`);
+        for (const track of tracks) {
+            newTracks.push({
+                title: track.name,
+                trackId: track.trackId,
+                artist: track.artist,
+                songURI: track.uri,
+                playlistTitle: track.playlistTitle
+            })
+        }
+        // console.log(`newTracks before ${JSON.stringify(newTracks)}`);
+        newTracks = removeDuplicatesFromTrackArray(newTracks);
+        // console.log(`newTracks after ${JSON.stringify(newTracks)}`);
+    } catch (e) {
+        console.log(`Some error occured in getNewTracks ${e.stack}`);
+        return [];
+    }
 }
 
 // Removes duplicate tracks from getNewTracks response
@@ -420,11 +457,11 @@ function removeDuplicatesFromTrackArray(trackArray) {
     return uniqueTrackArray;
 }
 
+
+
 exports.handler = async (event) => {
     console.log(`Top of event`);
     // Set variables based on environment
-    setGlobalVariables(event.stageVariables);
-    console.log(`After Setting global variable`);
     environmentFromStageVariable = event.stageVariables;
     try {
         // Used to get all tracks from all watched playlists
@@ -456,39 +493,56 @@ exports.handler = async (event) => {
                 // let tracks = []
                 const getNewTracksFunctionArray = [];
                 for (const playlistId of playlistIdArray) {
-                    getNewTracksFunctionArray.push(getNewTracks(playlistId));
+                    getNewTracksFunctionArray.push(getNewTracksImproved(playlistId));
                 }
 
                 let getNewTracksPromiseAllResponse = await Promise.all(getNewTracksFunctionArray);
+                console.log(`RESPONSE BEFORE FLAT ${getNewTracksPromiseAllResponse}`);
                 let tracks = getNewTracksPromiseAllResponse.flat();
+                console.log(`RESPONSE AFTER FLAT ${tracks}`);
                 response.body = JSON.stringify(tracks)
             }
             console.log(`New tracks Response ${response.body}`);
             return response;
         }
 
-        // Update Playlist and Tracks tables by removing tracks over 24 hours
-        await updateTracks();
-
         // Find a way to consolidate? Can a playlist be added between when updateTracks() runs vs this runs?
         const playlists = await getPlaylistArrayFromS3();
         // const playlists = ["6omtoYWO4IMVgUNF0vNI8L"]; // test
         console.log(playlists);
 
+        // Update Playlist and Tracks tables by removing tracks over 24 hours
+        // await updateTracks(playlists);
+        let songTrackerTableQueryParam = {
+            TableName: songTrackerTableName,
+            IndexName: "playlistId-index",
+            KeyConditionExpression: "playlistId = :playlistId",
+            // FilterExpression: "stopNotification = :stopNotificationBooleanString",
+        };
         // Tracks to see if notification should be sent
         // let shouldSendNotificationCounter = 0;
+        const spotifyToken = await fetchSpotifyToken();
         for (const currentPlaylistId of playlists) {
             console.log(`========>${currentPlaylistId}<========`);
             // Get spotify Token
             // TODO:Find best way to handle expired tokens. Handle 401 issues.
-            const tracks = await getTracksAddedInTheLast24Hours(currentPlaylistId);
+            songTrackerTableQueryParam.ExpressionAttributeValues = {
+                ":playlistId": currentPlaylistId
+            };
+            const [tracks, songQueryResponse] = await Promise.all([getTracksAddedInTheLast24Hours(currentPlaylistId, spotifyToken), documentClient.query(songTrackerTableQueryParam).promise()]);
+            const queriedSongs = songQueryResponse.Items;
             if (tracks.length > 0) { // IF there's at least one track
                 for (const trackItem of tracks) {
-                    console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
                     if (trackItem.track) {
                         // putting this counter here to ensure there indeed is at least one track added to dynamo, that will be shown to the user when they click on the notification
                         // shouldSendNotificationCounter += 1;
-                        await addTrackToDynamo(trackItem, currentPlaylistId);
+                        const getTrackFromPlaylistFilter = queriedSongs.filter(currentSong => currentSong.trackId === trackItem.track.id);
+                        if (getTrackFromPlaylistFilter.length === 0) {
+                            console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
+                            await addTrackToDynamo(trackItem, currentPlaylistId, spotifyToken);
+                        } else {
+                            console.log(`Track ${trackItem.track.id} already tied to playlist ${currentPlaylistId}`);
+                        }
                     }
                 }
             }
@@ -515,3 +569,6 @@ exports.handler = async (event) => {
 
     return response
 }
+
+// Edge case
+// - User mistakenly adds track to playlist - adds playlist, cron job runs and user immediately removes playlist - should song list be updated?
