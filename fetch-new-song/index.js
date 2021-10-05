@@ -362,7 +362,7 @@ async function fetchTrackFromSpotifyAndConstructTrackObject(trackUUID, playlistI
 }
 
 // Gets the new tracks of a playlist and puts it in a "track" object
-async function getNewTracks(playlistId) {
+async function getNewTracksOld(playlistId) {
     console.log(`Playlist getting new tracks for =====> ${playlistId}`);
     let newTracks = []
     try {
@@ -406,7 +406,8 @@ async function getNewTracks(playlistId) {
     return newTracks;
 }
 
-async function getNewTracksImproved(playlistId) {
+async function getNewTracks(playlistId) {
+    let newTracks = [];
     try {
         let songTrackerTableQueryParam = {
             TableName: songTrackerTableName,
@@ -419,7 +420,6 @@ async function getNewTracksImproved(playlistId) {
 
         const trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
         const tracks = trackResponse.Items;
-        let newTracks = [];
         console.log(`Query Result ${JSON.stringify(trackResponse)}`);
         console.log(`Query ITEM Result ${JSON.stringify(tracks)}`);
         for (const track of tracks) {
@@ -438,6 +438,8 @@ async function getNewTracksImproved(playlistId) {
         console.log(`Some error occured in getNewTracks ${e.stack}`);
         return [];
     }
+
+    return newTracks;
 }
 
 // Removes duplicate tracks from getNewTracks response
@@ -493,13 +495,10 @@ exports.handler = async (event) => {
                 // let tracks = []
                 const getNewTracksFunctionArray = [];
                 for (const playlistId of playlistIdArray) {
-                    getNewTracksFunctionArray.push(getNewTracksImproved(playlistId));
+                    getNewTracksFunctionArray.push(getNewTracks(playlistId));
                 }
-
                 let getNewTracksPromiseAllResponse = await Promise.all(getNewTracksFunctionArray);
-                console.log(`RESPONSE BEFORE FLAT ${getNewTracksPromiseAllResponse}`);
                 let tracks = getNewTracksPromiseAllResponse.flat();
-                console.log(`RESPONSE AFTER FLAT ${tracks}`);
                 response.body = JSON.stringify(tracks)
             }
             console.log(`New tracks Response ${response.body}`);
