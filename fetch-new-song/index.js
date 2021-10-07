@@ -141,41 +141,19 @@ async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
     console.log(`About to add song uuid to Song Tracker Table`);
     const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
     // Add uuid to playlist
-    const updatePlaylistWithTrackParam = {
-        TableName: watchedPlaylistsTableName,
-        Key: {playlistId: playlistId},
-        UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD trackUUIDs :track_uuid',
-        ExpressionAttributeValues: {
-            ":track_uuid": documentClient.createSet([trackUUID]),
-            ":timestamp": timeInUTC
-        }
-    }
-    const updateSetResponse = await documentClient.update(updatePlaylistWithTrackParam).promise();
-    console.log(`Update param: ${JSON.stringify(updatePlaylistWithTrackParam)}`);
-    console.log(`Update response ${JSON.stringify(updateSetResponse)}`);
-    console.log(`Added ${trackUUID} to WatchedPlaylists Table`);
-}
-
-async function deleteSongUUIDFromPlaylistAndSongTable(trackUUID, currentPlaylist) {
-    const deleteTrackParams = {
-        TableName: songTrackerTableName,
-        Key: {id: trackUUID}
-    }
-    const deletedData = await documentClient.delete(deleteTrackParams).promise();
-
-    // Remove trackUUID from playlist table
-    console.log(`==================REMOVING TRACK ${trackUUID} FROM SET==================`);
-    const currentTimePlaylistTable = new Date().toISOString();
-    const dynamoUpdateParams = {
-        TableName: watchedPlaylistsTableName,
-        Key: {playlistId: currentPlaylist},
-        UpdateExpression: 'set lastModifiedTimestamp = :timestamp DELETE trackUUIDs :currentTrackUUID',
-        ExpressionAttributeValues: {
-            ":currentTrackUUID": documentClient.createSet([trackUUID]), // To remove an item from a set, you have to specify the item and encapsulate it in a set. createSet takes a list hence why [] is wrapped around the trackUUID needed to be deleted
-            ":timestamp": currentTimePlaylistTable
-        }
-    }
-    const dynamoDeleteResponse = await documentClient.update(dynamoUpdateParams).promise();
+    // const updatePlaylistWithTrackParam = {
+    //     TableName: watchedPlaylistsTableName,
+    //     Key: {playlistId: playlistId},
+    //     UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD trackUUIDs :track_uuid',
+    //     ExpressionAttributeValues: {
+    //         ":track_uuid": documentClient.createSet([trackUUID]),
+    //         ":timestamp": timeInUTC
+    //     }
+    // }
+    // const updateSetResponse = await documentClient.update(updatePlaylistWithTrackParam).promise();
+    // console.log(`Update param: ${JSON.stringify(updatePlaylistWithTrackParam)}`);
+    // console.log(`Update response ${JSON.stringify(updateSetResponse)}`);
+    // console.log(`Added ${trackUUID} to WatchedPlaylists Table`);
 }
 
 async function sendNotificationForCurrentTimeIfNeeded() {
@@ -199,6 +177,7 @@ async function sendNotificationForCurrentTimeIfNeeded() {
 
         const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
         const devices = dynamoResponse.Items;
+        // TODO: Speed this up, do each device in parallel
         for (const currentDevice of devices) {
             if (currentDevice.watchedPlaylists) {
                 // Get set values and check if at least one playlist has a new song
@@ -241,14 +220,17 @@ async function sendNotificationForCurrentTimeIfNeeded() {
 
 async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
     for (const playlistId of playlistArray) {
-        const dynamoGetParams = {
-            TableName: watchedPlaylistsTableName,
-            Key: {playlistId: playlistId}
+        let songTrackerTableQueryParam = {
+            TableName: songTrackerTableName,
+            IndexName: "playlistId-index",
+            KeyConditionExpression: "playlistId = :playlistId",
+            ExpressionAttributeValues: {
+                ":playlistId": playlistId
+            }
         };
-        const data = await documentClient.get(dynamoGetParams).promise();
-        const playlist = data.Item;
+        const trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
 
-        if (playlist.trackUUIDs) {
+        if (trackResponse && trackResponse.Items && trackResponse.Items.length > 0) {
             return true;
         }
     }
