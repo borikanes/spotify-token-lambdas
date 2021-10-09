@@ -254,7 +254,6 @@ async function getNewTracks(playlistId) {
         do {
             trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
             const tracks = trackResponse.Items;
-            console.log(`Query Result ${JSON.stringify(trackResponse)}`);
             console.log(`Query ITEM Result ${JSON.stringify(tracks)}`);
             for (const track of tracks) {
                 newTracks.push({
@@ -313,15 +312,11 @@ exports.handler = async (event) => {
             }
             const header = event.headers;
             const deviceIdFromRequest = header["device-id"];
-            console.log(`Device Id in track New`);
             const getParams = {
                 TableName: notificationTrackerTableName,
                 Key: {deviceId: deviceIdFromRequest}
             }
-            console.log(`New Tracks before get deviceId`);
-            console.log(`Get params: ${JSON.stringify(getParams)}`);
             const data = await documentClient.get(getParams).promise();
-            console.log(`New Tracks after get deviceId`);
             const device = data.Item;
             if (!device.watchedPlaylists) {
                 response.statusCode = 404; // Returning not found if there are no watched Playlists. Basically a hack and easier for the front end to parse
@@ -329,7 +324,6 @@ exports.handler = async (event) => {
                 response.statusCode = 200;
                 const playlistIdArray = device.watchedPlaylists.values;
                 console.log(`Playlist Array in New: ${playlistIdArray}`);
-                // let tracks = []
                 const getNewTracksFunctionArray = [];
                 for (const playlistId of playlistIdArray) {
                     getNewTracksFunctionArray.push(getNewTracks(playlistId));
@@ -365,12 +359,11 @@ exports.handler = async (event) => {
                 ":playlistId": currentPlaylistId
             };
             const [tracks, songQueryResponse] = await Promise.all([getTracksAddedInTheLast24Hours(currentPlaylistId, spotifyToken), documentClient.query(songTrackerTableQueryParam).promise()]);
-            const queriedSongs = songQueryResponse.Items;
+            const queriedSongs = songQueryResponse.Items ?? [];
             if (tracks.length > 0) { // IF there's at least one track
                 for (const trackItem of tracks) {
                     if (trackItem.track) {
-                        // putting this counter here to ensure there indeed is at least one track added to dynamo, that will be shown to the user when they click on the notification
-                        // shouldSendNotificationCounter += 1;
+                        // Check if current track is in queried tracks from dynamo
                         const getTrackFromPlaylistFilter = queriedSongs.filter(currentSong => currentSong.trackId === trackItem.track.id);
                         if (getTrackFromPlaylistFilter.length === 0) {
                             console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
