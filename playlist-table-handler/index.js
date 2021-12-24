@@ -111,7 +111,7 @@ exports.handler = async (event) => {
                 },
                 ConditionExpression: 'attribute_not_exists(playlistId)'
             }
-            
+
             const dynamoResponse = await documentClient.put(dynamoPutParams).promise();
 
             await addItemToPlaylistArrayInS3(playlistId);
