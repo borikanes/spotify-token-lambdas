@@ -174,7 +174,6 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 ":stopNotificationBooleanString": "false"
             }
         };
-
         const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
         const devices = dynamoResponse.Items;
         // TODO: Speed this up, do each device in parallel
