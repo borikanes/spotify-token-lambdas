@@ -140,20 +140,6 @@ async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
     };
     console.log(`About to add song uuid to Song Tracker Table`);
     const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
-    // Add uuid to playlist
-    // const updatePlaylistWithTrackParam = {
-    //     TableName: watchedPlaylistsTableName,
-    //     Key: {playlistId: playlistId},
-    //     UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD trackUUIDs :track_uuid',
-    //     ExpressionAttributeValues: {
-    //         ":track_uuid": documentClient.createSet([trackUUID]),
-    //         ":timestamp": timeInUTC
-    //     }
-    // }
-    // const updateSetResponse = await documentClient.update(updatePlaylistWithTrackParam).promise();
-    // console.log(`Update param: ${JSON.stringify(updatePlaylistWithTrackParam)}`);
-    // console.log(`Update response ${JSON.stringify(updateSetResponse)}`);
-    // console.log(`Added ${trackUUID} to WatchedPlaylists Table`);
 }
 
 async function sendNotificationForCurrentTimeIfNeeded() {
@@ -161,7 +147,6 @@ async function sendNotificationForCurrentTimeIfNeeded() {
         const now = new Date();
         const currentHour = now.getUTCHours();
         console.log(`Sending notifications to devices on ${currentHour.toString()} UTC time`);
-        // const currentHour = "0";
 
         // Get all devices with current Hour aka preferredNotificationTime
         const dynamoQueryParam = {
@@ -267,9 +252,7 @@ async function getNewTracks(playlistId) {
             songTrackerTableQueryParam.ExclusiveStartKey = trackResponse.LastEvaluatedKey;
         } while (typeof trackResponse.LastEvaluatedKey !== "undefined");
 
-        // console.log(`newTracks before ${JSON.stringify(newTracks)}`);
         newTracks = removeDuplicatesFromTrackArray(newTracks);
-        // console.log(`newTracks after ${JSON.stringify(newTracks)}`);
     } catch (e) {
         console.log(`Some error occured in getNewTracks ${e.stack}`);
         return [];
