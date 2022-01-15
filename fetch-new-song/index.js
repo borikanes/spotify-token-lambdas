@@ -82,9 +82,8 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
       }
     };
     const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}/tracks`, getPlaylistRequestConfig);
-    let playlistResponse;
+    let playlistResponse = await fetchTracksResponse.json();
     if (fetchTracksResponse.status === 200) {
-        playlistResponse = await fetchTracksResponse.json();
         let items = playlistResponse.items;
         // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
         newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
@@ -96,6 +95,12 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
             newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
         }
     }
+
+    if (playlistResponse.total === newTracksArray.length) { // If spotify reloads 100% of their playlist, just ignore and return [].
+        console.log(`All items in playlist ${playlistId} is reloaded.`);
+        return [];
+    }
+
     console.log(`Leaving getTracksAddedInTheLast24Hour. Array => ${JSON.stringify(newTracksArray)}`);
     return newTracksArray;
 }
