@@ -81,23 +81,43 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
         'Authorization': `Bearer ${spotifyToken}`
       }
     };
-    const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}/tracks`, getPlaylistRequestConfig);
-    let playlistResponse = await fetchTracksResponse.json();
+    const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig);
+    let playlistResponseBody = await fetchTracksResponse.json();
+    let playlistTracks = playlistResponseBody.tracks;
+
+    /**if (fetchTracksResponse.status === 200) {
+        let items = playlistTracks.items;
+
+        do {
+            console.log('Going through paginated urls');
+            // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
+            newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
+            console.log('Going through paginated urls2');
+            console.log(`next => ${JSON.stringify(playlistTracks)}`);
+            let paginatedResponse = await fetch(playlistTracks.next, getPlaylistRequestConfig);
+            console.log('Going through paginated urls3');
+            playlistTracks = await paginatedResponse.json();
+            console.log('Going through paginated urls4');
+            items = playlistTracks.items;
+        } while (playlistTracks.next && playlistTracks.next !== null);
+    }*/
+
     if (fetchTracksResponse.status === 200) {
-        let items = playlistResponse.items;
+        let items = playlistTracks.items;
         // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
         newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
-        while (playlistResponse.next && playlistResponse.next !== null) {
+        while (playlistTracks.next && playlistTracks.next !== null) {
             console.log('Going through paginated urls');
-            let paginatedResponse = await fetch(playlistResponse.next, getPlaylistRequestConfig);
-            playlistResponse = await paginatedResponse.json();
-            items = playlistResponse.items;
+            let paginatedResponse = await fetch(playlistTracks.next, getPlaylistRequestConfig);
+            playlistTracks = await paginatedResponse.json();
+            items = playlistTracks.items;
             newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
         }
     }
 
-    if (playlistResponse.total === newTracksArray.length) { // If spotify reloads 100% of their playlist, just ignore and return [].
-        console.log(`All items in playlist ${playlistId} is reloaded.`);
+    // If spotify reloads 100% of their playlist, just ignore and return [].
+    if (playlistResponseBody.tracks.total === newTracksArray.length && playlistResponseBody.owner.display_name === "Spotify") {
+        console.log(`All tracks in playlist ${playlistId} is reloaded; weird spotify reload`);
         return [];
     }
 
