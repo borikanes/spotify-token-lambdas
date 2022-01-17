@@ -81,21 +81,29 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
         'Authorization': `Bearer ${spotifyToken}`
       }
     };
-    const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}/tracks`, getPlaylistRequestConfig);
-    let playlistResponse;
+    const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig);
+    let playlistResponseBody = await fetchTracksResponse.json();
+    let playlistTracks = playlistResponseBody.tracks;
+
     if (fetchTracksResponse.status === 200) {
-        playlistResponse = await fetchTracksResponse.json();
-        let items = playlistResponse.items;
+        let items = playlistTracks.items;
         // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
         newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
-        while (playlistResponse.next && playlistResponse.next !== null) {
+        while (playlistTracks.next && playlistTracks.next !== null) {
             console.log('Going through paginated urls');
-            let paginatedResponse = await fetch(playlistResponse.next, getPlaylistRequestConfig);
-            playlistResponse = await paginatedResponse.json();
-            items = playlistResponse.items;
+            let paginatedResponse = await fetch(playlistTracks.next, getPlaylistRequestConfig);
+            playlistTracks = await paginatedResponse.json();
+            items = playlistTracks.items;
             newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
         }
     }
+
+    // If spotify reloads 100% of their playlist, just ignore and return [].
+    if (playlistResponseBody.tracks.total === newTracksArray.length && playlistResponseBody.owner.display_name === "Spotify") {
+        console.log(`All tracks in playlist ${playlistId} is reloaded; weird spotify reload`);
+        return [];
+    }
+
     console.log(`Leaving getTracksAddedInTheLast24Hour. Array => ${JSON.stringify(newTracksArray)}`);
     return newTracksArray;
 }
@@ -140,20 +148,6 @@ async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
     };
     console.log(`About to add song uuid to Song Tracker Table`);
     const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
-    // Add uuid to playlist
-    // const updatePlaylistWithTrackParam = {
-    //     TableName: watchedPlaylistsTableName,
-    //     Key: {playlistId: playlistId},
-    //     UpdateExpression: 'set lastModifiedTimestamp = :timestamp ADD trackUUIDs :track_uuid',
-    //     ExpressionAttributeValues: {
-    //         ":track_uuid": documentClient.createSet([trackUUID]),
-    //         ":timestamp": timeInUTC
-    //     }
-    // }
-    // const updateSetResponse = await documentClient.update(updatePlaylistWithTrackParam).promise();
-    // console.log(`Update param: ${JSON.stringify(updatePlaylistWithTrackParam)}`);
-    // console.log(`Update response ${JSON.stringify(updateSetResponse)}`);
-    // console.log(`Added ${trackUUID} to WatchedPlaylists Table`);
 }
 
 async function sendNotificationForCurrentTimeIfNeeded() {
@@ -161,7 +155,6 @@ async function sendNotificationForCurrentTimeIfNeeded() {
         const now = new Date();
         const currentHour = now.getUTCHours();
         console.log(`Sending notifications to devices on ${currentHour.toString()} UTC time`);
-        // const currentHour = "0";
 
         // Get all devices with current Hour aka preferredNotificationTime
         const dynamoQueryParam = {
@@ -174,7 +167,6 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 ":stopNotificationBooleanString": "false"
             }
         };
-
         const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
         const devices = dynamoResponse.Items;
         // TODO: Speed this up, do each device in parallel
@@ -268,9 +260,7 @@ async function getNewTracks(playlistId) {
             songTrackerTableQueryParam.ExclusiveStartKey = trackResponse.LastEvaluatedKey;
         } while (typeof trackResponse.LastEvaluatedKey !== "undefined");
 
-        // console.log(`newTracks before ${JSON.stringify(newTracks)}`);
         newTracks = removeDuplicatesFromTrackArray(newTracks);
-        // console.log(`newTracks after ${JSON.stringify(newTracks)}`);
     } catch (e) {
         console.log(`Some error occured in getNewTracks ${e.stack}`);
         return [];
