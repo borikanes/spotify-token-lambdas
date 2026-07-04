@@ -94,8 +94,18 @@ exports.handler = async (event) => {
     setGlobalVariables(event.stageVariables);
     console.log(`TableName=======> ${playlistTableName}`);
     let playlistId;
+    if (event.path && event.path === "/playlists" && event.httpMethod === "GET") {
+        const deviceID = event.headers['device-id'];
+
+        const dynamoGetParams = {
+            TableName: playlistTableName,
+            Key: {playlistId: deviceID}
+        };
+
+        const playlistItem = await documentClient.get(dynamoGetParams).promise();
+    }
     // if event is to add playlist
-    if (event.path && event.path === "/playlists/add") {
+    else if (event.path && event.path === "/playlists/add") {
         try {
             const body = JSON.parse(event.body);
             playlistId = body.playlistId; // TODO: Verify playlistId exists

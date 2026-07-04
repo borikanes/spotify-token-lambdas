@@ -8,7 +8,7 @@ exports.handler = async (event) => {
 	    url: "https://accounts.spotify.com/api/token",
 	    headers: {
 	      "Content-Type": "application/x-www-form-urlencoded",
-	      "Authorization": "Basic " + btoa(process.env.SPOTIFY_CLIENT_ID + ":" + process.env.SPOTIFY_CLIENT_SECRET)
+		  'Authorization': 'Basic ' + (new Buffer.from(process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET).toString('base64'))
 	    },
 	    data: {
 	      grant_type: 'authorization_code',
