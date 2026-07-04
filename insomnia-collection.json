@@ -1,0 +1,203 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-03-03T00:00:00.000Z",
+  "__export_source": "insomnia.desktop.app:v2023",
+  "resources": [
+    {
+      "_id": "wrk_spotify_lambdas",
+      "_type": "workspace",
+      "parentId": null,
+      "name": "Spotify Lambdas",
+      "description": "All API endpoints for the Song Updater iOS app backend — 5 independent AWS Lambda functions."
+    },
+    {
+      "_id": "env_base",
+      "_type": "environment",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "Base Environment",
+      "data": {
+        "base_url": "https://your-api-id.execute-api.us-east-1.amazonaws.com/prod",
+        "spotify_client_id": "your_spotify_client_id",
+        "spotify_client_secret": "your_spotify_client_secret",
+        "spotify_callback_url": "your_spotify_callback_url",
+        "device_id": "your_device_id",
+        "playlist_id": "spotify_playlist_id_here",
+        "spotify_auth_code": "paste_auth_code_after_oauth_flow",
+        "spotify_refresh_token": "paste_refresh_token_here"
+      }
+    },
+    {
+      "_id": "fld_fetch_new_song",
+      "_type": "request_group",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "fetch-new-song",
+      "description": "Core lambda: fetches Spotify tracks added in the last 24 hours and sends APN push notifications. Triggered by CloudWatch cron and also exposed as a GET HTTP endpoint."
+    },
+    {
+      "_id": "req_get_new_tracks",
+      "_type": "request",
+      "parentId": "fld_fetch_new_song",
+      "name": "Get New Tracks",
+      "description": "Returns tracks added in the last 24 hours for all playlists watched by the given device. Responds 404 if the device has no watched playlists.",
+      "method": "GET",
+      "url": "{{ base_url }}/tracks/new",
+      "headers": [
+        {
+          "name": "device-id",
+          "value": "{{ device_id }}",
+          "description": "The unique device identifier used to look up which playlists to fetch tracks for."
+        }
+      ],
+      "body": {},
+      "parameters": [],
+      "authentication": {}
+    },
+    {
+      "_id": "fld_spotify_token",
+      "_type": "request_group",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "spotify-api-token-lambda",
+      "description": "Spotify OAuth token swap endpoint. Exchanges an authorization code (from the Spotify auth flow) for an access token and refresh token. Requires an API Gateway mapping template to transform the form body — see README.md."
+    },
+    {
+      "_id": "req_token_swap",
+      "_type": "request",
+      "parentId": "fld_spotify_token",
+      "name": "Token Swap (Authorization Code → Tokens)",
+      "description": "Exchanges a Spotify OAuth authorization code for an access_token and refresh_token. The 'code' is obtained after the user completes the Spotify login/auth modal. NOTE: API Gateway must apply the VTL mapping template (see README.md) to transform the form body to { \"data\": { ... } } before this reaches the lambda.",
+      "method": "POST",
+      "url": "{{ base_url }}/api/token",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/x-www-form-urlencoded"
+        }
+      ],
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          {
+            "name": "code",
+            "value": "{{ spotify_auth_code }}",
+            "description": "The authorization code returned by Spotify after the user completes the OAuth flow."
+          }
+        ]
+      },
+      "authentication": {}
+    },
+    {
+      "_id": "fld_spotify_refresh",
+      "_type": "request_group",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "spotify-refresh-token-lambda",
+      "description": "Spotify OAuth refresh token endpoint. Exchanges a refresh token for a new access token. Requires the same API Gateway mapping template as the token swap lambda."
+    },
+    {
+      "_id": "req_token_refresh",
+      "_type": "request",
+      "parentId": "fld_spotify_refresh",
+      "name": "Refresh Token (Refresh Token → New Access Token)",
+      "description": "Exchanges a Spotify refresh_token for a new access_token. Use this after the access_token from the initial token swap expires. NOTE: API Gateway must apply the VTL mapping template (see README.md) to transform the form body to { \"data\": { ... } } before this reaches the lambda.",
+      "method": "POST",
+      "url": "{{ base_url }}/api/refresh_token",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/x-www-form-urlencoded"
+        }
+      ],
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          {
+            "name": "refresh_token",
+            "value": "{{ spotify_refresh_token }}",
+            "description": "The refresh token previously obtained from the token swap endpoint."
+          }
+        ]
+      },
+      "authentication": {}
+    },
+    {
+      "_id": "fld_playlist_handler",
+      "_type": "request_group",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "playlist-table-handler",
+      "description": "Manages watched playlists in DynamoDB and S3. Uses a reference-counting pattern so that multiple users can watch the same playlist — a playlist is only deleted from DynamoDB/S3 when the last user removes it."
+    },
+    {
+      "_id": "req_add_playlist",
+      "_type": "request",
+      "parentId": "fld_playlist_handler",
+      "name": "Add Playlist",
+      "description": "Adds a Spotify playlist to the watched list. If the playlist is already being watched by another user, increments its watchCount instead of creating a duplicate entry. Updates both DynamoDB (WatchedPlaylists table) and S3 (playlists.json).",
+      "method": "POST",
+      "url": "{{ base_url }}/playlists/add",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"playlistId\": \"{{ playlist_id }}\"\n}"
+      },
+      "authentication": {}
+    },
+    {
+      "_id": "req_remove_playlist",
+      "_type": "request",
+      "parentId": "fld_playlist_handler",
+      "name": "Remove Playlist",
+      "description": "Decrements the watchCount for a playlist. If this is the last user watching it (watchCount reaches 0), deletes the playlist from DynamoDB (WatchedPlaylists), removes all associated track records from SongTrackMapper, and removes the entry from S3 (playlists.json).",
+      "method": "POST",
+      "url": "{{ base_url }}/playlists/remove",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/json"
+        }
+      ],
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"playlistId\": \"{{ playlist_id }}\"\n}"
+      },
+      "authentication": {}
+    },
+    {
+      "_id": "fld_feedback",
+      "_type": "request_group",
+      "parentId": "wrk_spotify_lambdas",
+      "name": "get-feedback-help",
+      "description": "Sends user feedback and help messages via AWS SES email. The lambda reads the message from the form body (expects { \"body-json\": { \"message\": \"...\" } } after API Gateway mapping) and emails it to the configured TO_EMAIL address."
+    },
+    {
+      "_id": "req_send_feedback",
+      "_type": "request",
+      "parentId": "fld_feedback",
+      "name": "Send Feedback / Help",
+      "description": "Sends a feedback or help message via AWS SES. The lambda expects the body to arrive as { \"body-json\": { \"message\": \"...\" } } — API Gateway must apply a mapping template to transform the form-urlencoded body before it reaches the lambda. The path below (/feedback) is a placeholder; update it to match your actual API Gateway route.",
+      "method": "POST",
+      "url": "{{ base_url }}/feedback",
+      "headers": [
+        {
+          "name": "Content-Type",
+          "value": "application/x-www-form-urlencoded"
+        }
+      ],
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          {
+            "name": "message",
+            "value": "Your feedback or help message here",
+            "description": "The text of the feedback or help request to email via SES."
+          }
+        ]
+      },
+      "authentication": {}
+    }
+  ]
+}
