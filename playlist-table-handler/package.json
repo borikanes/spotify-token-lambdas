@@ -4,7 +4,9 @@
   "description": "Code base to handle logic on the playlist dynamo table side including updating the table with latest information",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "rm -rf node_modules && npm install --production && zip -r playlist-table-handler.zip index.js node_modules package.json package-lock.json",
+    "deploy": "aws lambda update-function-code --function-name playlist-table-handler --zip-file fileb://playlist-table-handler.zip"
   },
   "author": "bori oludemi",
   "license": "ISC",

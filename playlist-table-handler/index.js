@@ -11,6 +11,7 @@ var playlistTableName = "WatchedPlaylists";
 var songTrackerTableName = "SongTrackMapper";
 const resourceBucket = "song-updater-resources";
 var playlistFileKey = "playlists.json";
+var notificationTrackerTableName = "NotificationTracker";
 
 function setGlobalVariables(stageVariables) {
     if (stageVariables && stageVariables.environment === 'qa') {
@@ -18,6 +19,7 @@ function setGlobalVariables(stageVariables) {
         playlistTableName = "WatchedPlaylistsQA";
         songTrackerTableName = "SongTrackMapperQA";
         playlistFileKey = "playlists-qa.json";
+        notificationTrackerTableName = "NotificationTrackerQA";
 
         return;
     }
@@ -95,14 +97,44 @@ exports.handler = async (event) => {
     console.log(`TableName=======> ${playlistTableName}`);
     let playlistId;
     if (event.path && event.path === "/playlists" && event.httpMethod === "GET") {
+        console.log("GET /playlists called");
         const deviceID = event.headers['device-id'];
+        if (!deviceID) {
+            console.log("Missing device-id header returning 400");
+            return {
+                statusCode: 400,
+                body: JSON.stringify({message: "Missing device-id header"}),
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        }
 
         const dynamoGetParams = {
-            TableName: playlistTableName,
-            Key: {playlistId: deviceID}
+            TableName: notificationTrackerTableName,
+            Key: {deviceId: deviceID}
         };
 
-        const playlistItem = await documentClient.get(dynamoGetParams).promise();
+        const deviceItem = await documentClient.get(dynamoGetParams).promise();
+        if (!deviceItem.Item) {
+            console.log(`No device item found for deviceId ${deviceID}`);
+            return {
+                statusCode: 404,
+                body: JSON.stringify({message: `No device item found for deviceId ${deviceID}`}),
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        } else {
+            console.log(`Device Item ======> ${JSON.stringify(deviceItem)}`)
+            return {
+                statusCode: 200,
+                body: JSON.stringify(deviceItem.Item.watchedPlaylists),
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+        }
     }
     // if event is to add playlist
     else if (event.path && event.path === "/playlists/add") {
