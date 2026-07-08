@@ -9,7 +9,7 @@
   "dependencies": {
     "axios": "^0.22.0",
     "btoa": "^1.1.2",
-    "qs": "^6.9.6"
+    "qs": "^6.9.7"
   },
   "author": "Bori Oludemi",
   "license": "ISC"
