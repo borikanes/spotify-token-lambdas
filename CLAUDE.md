@@ -14,9 +14,9 @@ cd <lambda-folder>
 npm install
 ```
 
-Deploy via [node-lambda](https://www.npmjs.com/package/node-lambda) or the AWS console. Include `node_modules` in the deployment package.
+**fetch-new-song** runs on `nodejs22.x` with AWS SDK v3 (provided by the runtime) and has no runtime npm dependencies — its deploy zip is just `index.js`. Deploy with `npm run build && npm run deploy` from `fetch-new-song/`. The other lambdas still bundle their `node_modules` (deploy via [node-lambda](https://www.npmjs.com/package/node-lambda) or the AWS console).
 
-There are no build, lint, or test commands — scripts are all no-ops.
+There are no lint or test commands.
 
 ## Architecture
 
@@ -33,11 +33,13 @@ Five independent lambdas, each in its own directory:
 ### Data Flow (fetch-new-song cron)
 
 1. Reads active playlist IDs from S3 (`song-updater-resources/playlists.json`)
-2. For each playlist, fetches tracks added in the last 24 hours from Spotify API (handles pagination)
+2. For each playlist (processed in parallel batches of 10), fetches tracks added in the last 24 hours from Spotify API (handles pagination). Playlists that Spotify errors on are skipped, recorded, and summarized in a `Failed playlists this run` log line
 3. Skips Spotify-owned playlists that reload 100% of their tracks (anti-spam)
 4. Writes new tracks to `SongTrackMapper` DynamoDB table with a 24-hour TTL
 5. Queries `NotificationTracker` table for devices whose `preferredNotificationTime` matches current UTC hour
-6. Sends APN push notifications via a separate notification service endpoint
+6. Sends APN push notifications via a separate notification service endpoint (the `apn-lambda-go` repo at `/Users/borikanes/Code/go/src/github.com/borikanes/apn-lambda-go` — see its CLAUDE.md)
+
+`fetch-new-song/scripts/prune-stale-playlists.js` is a maintenance script (dry-run by default, `--apply` to write) that removes playlists watched only by devices inactive since a cutoff date from `playlists.json` and `WatchedPlaylists`, backing up the old file to S3 first.
 
 ### DynamoDB Tables
 
@@ -45,7 +47,7 @@ Five independent lambdas, each in its own directory:
 - **`WatchedPlaylists`** — Playlists being monitored with a watch counter (multiple users can watch the same playlist)
 - **`SongTrackMapper`** — Tracks added in the last 24 hours; GSI: `playlistId-index` on `playlistId`; items auto-expire via TTL
 
-QA equivalents: `SongTrackMapperQA`, `WatchedPlaylistsQA`.
+QA equivalents: `SongTrackerMapperQA` (note the extra "er" — it does NOT match the prod name), `WatchedPlaylistsQA`, `NotificationTrackerQA`.
 
 ### S3
 

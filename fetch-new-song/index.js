@@ -1,8 +1,7 @@
-const AWS = require('aws-sdk');
-const btoa = require('btoa');
-const qs = require('qs');
-const fetch = require('node-fetch');
-const { v4: uuidv4 } = require('uuid'); // uuidv4()
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const crypto = require('node:crypto');
 
 var notificationTrackerTableName = process.env.NOTIFICATION_TRACKER_TABLE ? process.env.NOTIFICATION_TRACKER_TABLE : "NotificationTracker";
 var watchedPlaylistsTableName = process.env.WATCHED_PLAYLISTS_TABLE ? process.env.WATCHED_PLAYLISTS_TABLE : "WatchedPlaylists";
@@ -14,45 +13,62 @@ const ONE_DAY_IN_MILLISECONDS = 86400;
 
 const spotifyBaseURL = "https://api.spotify.com/v1";
 
-AWS.config.update({region: 'us-east-1'});
-const documentClient = new AWS.DynamoDB.DocumentClient();
-const s3 = new AWS.S3();
+// removeUndefinedValues matches v2 DocumentClient leniency — without it, any undefined
+// attribute (e.g. a missing playlist title) would make the whole put() throw
+const documentClient = DynamoDBDocumentClient.from(
+    new DynamoDBClient({ region: 'us-east-1' }),
+    { marshallOptions: { removeUndefinedValues: true } }
+);
+const s3 = new S3Client({ region: 'us-east-1' });
 
+// Playlists Spotify errored on during the current run, e.g. deleted/private playlists (404)
+// or Spotify-owned playlists that are no longer accessible via the API.
+// Module-level so getTracksAddedInTheLast24Hours can record into it; reset at the top of
+// every invocation because module state survives warm Lambda restarts.
+let failedPlaylists = [];
+
+/**
+ * Fetches a Spotify API access token using the client credentials flow.
+ * Client credentials (not user OAuth) means the token can only read public playlists.
+ *
+ * @returns {Promise<string>} A Spotify access token.
+ * @throws {Error} If Spotify rejects the request or returns no token — the whole run
+ *   should abort in that case since every playlist fetch would 401 anyway.
+ */
 async function fetchSpotifyToken() {
-    let config = {
-	    method: "POST",
-	    headers: {
-	      "Content-Type": "application/x-www-form-urlencoded",
-	      "Authorization": "Basic " + btoa(process.env.SPOTIFY_CLIENT_ID + ":" + process.env.SPOTIFY_CLIENT_SECRET)
-	    },
-	    body: {
-	      grant_type: 'client_credentials'
-	    }
-	}
+    const config = {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "Basic " + Buffer.from(`${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`).toString('base64')
+        },
+        body: new URLSearchParams({ grant_type: 'client_credentials' }).toString()
+    };
 
-	try {
-		// url encode data to send to spotify
-		config.body = qs.stringify(config.body);
+    const res = await fetch('https://accounts.spotify.com/api/token', config);
+    const data = await res.json();
 
-		let res = await fetch('https://accounts.spotify.com/api/token', config);
-		let data = await res.json();
-
-		return data.access_token;
-	} catch(err) {
-		console.log(err);
-		return err;
-	}
+    if (!res.ok || !data.access_token) {
+        throw new Error(`Failed to fetch Spotify token. Status ${res.status}. Body => ${JSON.stringify(data)}`);
+    }
+    return data.access_token;
 }
 
+/**
+ * Reads the dictionary of actively watched playlist IDs from S3 (written by
+ * the playlist-table-handler lambda) and returns the IDs as an array.
+ *
+ * @returns {Promise<string[]>} Array of watched Spotify playlist IDs.
+ * @throws Rethrows any S3/parse error — without the playlist file the cron has nothing to do.
+ */
 async function getPlaylistArrayFromS3() {
     try {
-        // Add to S3
         const getParams = {
             Bucket: resourceBucket,
             Key: playlistFileKey,
         }
-        const data = await s3.getObject(getParams).promise();
-        const jsonString = data.Body.toString('utf-8');
+        const data = await s3.send(new GetObjectCommand(getParams));
+        const jsonString = await data.Body.transformToString();
         console.log(`playlistArray jsonString from S3 ${jsonString}`);
         const playlistDictionary = JSON.parse(jsonString);
         return Object.keys(playlistDictionary);
@@ -62,18 +78,36 @@ async function getPlaylistArrayFromS3() {
     }
 }
 
+/**
+ * Checks whether a timestamp falls within the last 24 hours.
+ *
+ * @param {string} addedAtTimestamp - ISO 8601 timestamp (Spotify's track added_at).
+ * @returns {boolean} True if the timestamp is less than 24 hours old.
+ */
 function isTimeWithin24Hours(addedAtTimestamp) {
     let now = new Date().toISOString();
     now = Date.parse(now);
     const addedAtTimestampParsed = Date.parse(addedAtTimestamp);
 
     const dateDifferenceInHours = Math.trunc( (now - addedAtTimestampParsed) / 36e5 );
-    // console.log(`TIME DIFFERENCE ${dateDifferenceInHours}`);
     return (dateDifferenceInHours < 24);
 }
 
+/**
+ * Fetches a playlist from Spotify (following pagination) and returns the track
+ * items that were added in the last 24 hours, along with the playlist's title.
+ *
+ * If Spotify returns a non-200 for the playlist (deleted/private → 404, expired
+ * token → 401, rate limit → 429), the playlist is recorded in failedPlaylists and
+ * an empty track array is returned so one bad playlist can't kill the whole run.
+ *
+ * @param {string} playlistId - Spotify playlist ID.
+ * @param {string} spotifyToken - Spotify API access token.
+ * @returns {Promise<{tracks: Object[], playlistTitle: string}>} Track items added in the
+ *   last 24 hours plus the playlist title; tracks is [] on error or when the playlist
+ *   looks like a full Spotify-owned reload (anti-spam rule).
+ */
 async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
-    console.log(spotifyToken);
     let newTracksArray = []
     const getPlaylistRequestConfig = {
       method: 'get',
@@ -82,54 +116,64 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
       }
     };
     const fetchTracksResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig);
-    let playlistResponseBody = await fetchTracksResponse.json();
-    let playlistTracks = playlistResponseBody.tracks;
+    const playlistResponseBody = await fetchTracksResponse.json();
 
-    if (fetchTracksResponse.status === 200) {
-        let items = playlistTracks.items;
-        // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
-        newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
-        while (playlistTracks.next && playlistTracks.next !== null) {
-            console.log('Going through paginated urls');
-            let paginatedResponse = await fetch(playlistTracks.next, getPlaylistRequestConfig);
-            playlistTracks = await paginatedResponse.json();
-            items = playlistTracks.items;
-            newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
+    // Skip this playlist entirely on any Spotify error so the rest of the run continues.
+    if (fetchTracksResponse.status !== 200) {
+        console.log(`Skipping playlist ${playlistId}: Spotify returned ${fetchTracksResponse.status}. Body => ${JSON.stringify(playlistResponseBody)}`);
+        failedPlaylists.push({ playlistId: playlistId, status: fetchTracksResponse.status });
+        return { tracks: [], playlistTitle: "" };
+    }
+    const playlistTitle = playlistResponseBody.name;
+
+    let playlistTracks = playlistResponseBody.tracks;
+    let items = playlistTracks.items;
+    // Filter array by added_at < 24hours and push results into newTracksArray with the aid of the spread operator
+    newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
+    while (playlistTracks.next && playlistTracks.next !== null) {
+        console.log('Going through paginated urls');
+        const paginatedResponse = await fetch(playlistTracks.next, getPlaylistRequestConfig);
+        // On pagination errors, stop paginating and keep whatever tracks we already collected
+        if (paginatedResponse.status !== 200) {
+            console.log(`Pagination for playlist ${playlistId} failed with ${paginatedResponse.status}; continuing with ${newTracksArray.length} tracks collected so far`);
+            failedPlaylists.push({ playlistId: playlistId, status: paginatedResponse.status });
+            break;
         }
+        playlistTracks = await paginatedResponse.json();
+        items = playlistTracks.items;
+        newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
     }
 
-    // If spotify reloads 100% of their playlist, just ignore and return [].
+    // If spotify reloads 100% of their playlist, just ignore and return no tracks.
     if (playlistResponseBody.tracks.total === newTracksArray.length && playlistResponseBody.owner.display_name === "Spotify") {
         console.log(`All tracks in playlist ${playlistId} is reloaded; weird spotify reload`);
-        return [];
+        return { tracks: [], playlistTitle };
     }
 
     console.log(`Leaving getTracksAddedInTheLast24Hour. Array => ${JSON.stringify(newTracksArray)}`);
-    return newTracksArray;
+    return { tracks: newTracksArray, playlistTitle };
 }
 
 // TODO: Use Batch write Item eventually?
-// writes the new track to the playlist and track table with new songs in last 24 hoours
-async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
+/**
+ * Writes a newly discovered track to the SongTrackMapper table with a 24-hour TTL.
+ *
+ * @param {Object} trackItem - Spotify playlist track item (contains .track details).
+ * @param {string} playlistId - Spotify playlist ID the track belongs to.
+ * @param {string} playlistTitle - Playlist title (already fetched with the tracks).
+ * @returns {Promise<void>}
+ * Side effects: one DynamoDB put.
+ */
+async function addTrackToDynamo(trackItem, playlistId, playlistTitle) {
     console.log(`In Add track to Dynamo`);
     // generate uuid for track and add to current playlist on WatchedPlaylists table
     // push song info with uuid
-    const trackUUID = uuidv4();
+    const trackUUID = crypto.randomUUID();
     const now = new Date();
     const twentyFourHoursLater = Date.parse(new Date(now.setHours(now.getHours() + 24))) / 1000;
     const timeInUTC = now.toISOString();
 
     console.log(`TrackItem => ${JSON.stringify(trackItem)}`);
-
-    // Fetch playlist title
-    const getPlaylistRequestConfig = {
-      method: 'get',
-      headers: {
-        'Authorization': `Bearer ${spotifyToken}`
-      }
-    };
-    const playlistResponse = await fetch(`${spotifyBaseURL}/playlists/${playlistId}`, getPlaylistRequestConfig);
-    const playlistBody = await playlistResponse.json();
 
     // Add data to song table
     const dynamoTrackPutParams = {
@@ -143,13 +187,22 @@ async function addTrackToDynamo(trackItem, playlistId, spotifyToken) {
             artist: trackItem.track.artists[0].name, // For now just return the first artist??
             ttl: twentyFourHoursLater,
             playlistId: playlistId,
-            playlistTitle: playlistBody.name
+            playlistTitle: playlistTitle
         },
     };
     console.log(`About to add song uuid to Song Tracker Table`);
-    const updateSongTrackerResponse = await documentClient.put(dynamoTrackPutParams).promise();
+    await documentClient.send(new PutCommand(dynamoTrackPutParams));
 }
 
+/**
+ * Sends an APN push notification (via the notification service endpoint) to every
+ * device whose preferredNotificationTime matches the current UTC hour and whose
+ * watched playlists have at least one new track.
+ *
+ * @returns {Promise<void>}
+ * Side effects: DynamoDB queries and HTTP POSTs to the notification endpoint.
+ * Errors are caught and logged — notification failures shouldn't fail the cron run.
+ */
 async function sendNotificationForCurrentTimeIfNeeded() {
     try {
         const now = new Date();
@@ -167,13 +220,13 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 ":stopNotificationBooleanString": "false"
             }
         };
-        const dynamoResponse = await documentClient.query(dynamoQueryParam).promise();
+        const dynamoResponse = await documentClient.send(new QueryCommand(dynamoQueryParam));
         const devices = dynamoResponse.Items;
         // TODO: Speed this up, do each device in parallel
         for (const currentDevice of devices) {
             if (currentDevice.watchedPlaylists) {
-                // Get set values and check if at least one playlist has a new song
-                const playlistIdArray = currentDevice.watchedPlaylists.values;
+                // SDK v3 returns DynamoDB string sets as native JS Sets, so convert to array
+                const playlistIdArray = Array.from(currentDevice.watchedPlaylists);
                 const isThereNewTrack = await doesAtLeastOnePlaylistHaveNewTrack(playlistIdArray);
                 console.log(`About to get into await if statement. isThereNewTrack is ${isThereNewTrack}`);
                 if (isThereNewTrack === true && currentDevice.deviceToken) {
@@ -210,6 +263,13 @@ async function sendNotificationForCurrentTimeIfNeeded() {
     }
 }
 
+/**
+ * Checks whether at least one of the given playlists has a new track recorded
+ * in the SongTrackMapper table.
+ *
+ * @param {string[]} playlistArray - Spotify playlist IDs to check.
+ * @returns {Promise<boolean>} True as soon as any playlist has at least one new track.
+ */
 async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
     for (const playlistId of playlistArray) {
         let songTrackerTableQueryParam = {
@@ -220,7 +280,7 @@ async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
                 ":playlistId": playlistId
             }
         };
-        const trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
+        const trackResponse = await documentClient.send(new QueryCommand(songTrackerTableQueryParam));
 
         if (trackResponse && trackResponse.Items && trackResponse.Items.length > 0) {
             return true;
@@ -230,7 +290,13 @@ async function doesAtLeastOnePlaylistHaveNewTrack(playlistArray) {
     return false;
 }
 
-// Gets the new tracks of a playlist and puts it in a "track" object
+/**
+ * Gets the new tracks of a playlist from the SongTrackMapper table (following
+ * pagination) and maps them into the track shape the iOS app expects.
+ *
+ * @param {string} playlistId - Spotify playlist ID.
+ * @returns {Promise<Object[]>} De-duplicated track objects; [] if the query fails.
+ */
 async function getNewTracks(playlistId) {
     let newTracks = [];
     try {
@@ -244,7 +310,7 @@ async function getNewTracks(playlistId) {
         };
         let trackResponse = {};
         do {
-            trackResponse = await documentClient.query(songTrackerTableQueryParam).promise();
+            trackResponse = await documentClient.send(new QueryCommand(songTrackerTableQueryParam));
             const tracks = trackResponse.Items;
             console.log(`Query ITEM Result ${JSON.stringify(tracks)}`);
             for (const track of tracks) {
@@ -269,7 +335,12 @@ async function getNewTracks(playlistId) {
     return newTracks;
 }
 
-// Removes duplicate tracks from getNewTracks response
+/**
+ * Removes duplicate tracks (same trackId) from a getNewTracks response.
+ *
+ * @param {Object[]} trackArray - Track objects that may contain duplicates.
+ * @returns {Object[]} Tracks with duplicates removed, original order preserved.
+ */
 function removeDuplicatesFromTrackArray(trackArray) {
     if (trackArray.length === 0) {
         return [];
@@ -286,10 +357,71 @@ function removeDuplicatesFromTrackArray(trackArray) {
     return uniqueTrackArray;
 }
 
+/**
+ * Processes a single watched playlist for the cron run: fetches its tracks added in
+ * the last 24 hours from Spotify, and writes the ones not already recorded to the
+ * SongTrackMapper table.
+ *
+ * Safe to run in parallel with other playlists — all state is local. Any unexpected
+ * exception is caught and recorded in failedPlaylists so one playlist can't fail a
+ * whole batch.
+ *
+ * @param {string} playlistId - Spotify playlist ID.
+ * @param {string} spotifyToken - Spotify API access token.
+ * @returns {Promise<void>}
+ * Side effects: Spotify API calls, DynamoDB query + puts.
+ */
+async function processPlaylist(playlistId, spotifyToken) {
+    try {
+        console.log(`========>${playlistId}<========`);
+        const songTrackerTableQueryParam = {
+            TableName: songTrackerTableName,
+            IndexName: "playlistId-index",
+            KeyConditionExpression: "playlistId = :playlistId",
+            ExpressionAttributeValues: {
+                ":playlistId": playlistId
+            }
+        };
+        const [{ tracks, playlistTitle }, songQueryResponse] = await Promise.all([
+            getTracksAddedInTheLast24Hours(playlistId, spotifyToken),
+            documentClient.send(new QueryCommand(songTrackerTableQueryParam))
+        ]);
+        const queriedSongs = songQueryResponse.Items ?? [];
+        for (const trackItem of tracks) {
+            if (trackItem.track) {
+                // Check if current track is in queried tracks from dynamo
+                const getTrackFromPlaylistFilter = queriedSongs.filter(currentSong => currentSong.trackId === trackItem.track.id);
+                if (getTrackFromPlaylistFilter.length === 0) {
+                    console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
+                    await addTrackToDynamo(trackItem, playlistId, playlistTitle);
+                } else {
+                    console.log(`Track ${trackItem.track.id} already tied to playlist ${playlistId}`);
+                }
+            }
+        }
+    } catch (e) {
+        console.log(`Error processing playlist ${playlistId} => ${e.stack}`);
+        failedPlaylists.push({ playlistId: playlistId, status: "exception" });
+    }
+}
+
+/**
+ * Lambda entry point. Serves two purposes:
+ * - API Gateway GET /tracks/new: returns new tracks for the requesting device's watched playlists.
+ * - EventBridge hourly cron (any other event): refreshes the SongTrackMapper table from
+ *   Spotify and sends push notifications for the current UTC hour.
+ *
+ * @param {Object} event - API Gateway proxy event or EventBridge scheduled event.
+ * @returns {Promise<Object>} API Gateway-style response object.
+ * @throws Rethrows fatal errors (S3 read failure, Spotify token failure) so the
+ *   invocation is marked as failed in CloudWatch.
+ */
 exports.handler = async (event) => {
     console.log(`Top of event`);
     // Set variables based on environment
     environmentFromStageVariable = event.stageVariables;
+    // Reset per-run state since module scope persists across warm invocations
+    failedPlaylists = [];
 
     try {
         // Used to get all tracks from all watched playlists
@@ -306,13 +438,14 @@ exports.handler = async (event) => {
                 TableName: notificationTrackerTableName,
                 Key: {deviceId: deviceIdFromRequest}
             }
-            const data = await documentClient.get(getParams).promise();
+            const data = await documentClient.send(new GetCommand(getParams));
             const device = data.Item;
             if (!device.watchedPlaylists) {
                 response.statusCode = 404; // Returning not found if there are no watched Playlists. Basically a hack and easier for the front end to parse
             } else {
                 response.statusCode = 200;
-                const playlistIdArray = device.watchedPlaylists.values;
+                // SDK v3 returns DynamoDB string sets as native JS Sets, so convert to array
+                const playlistIdArray = Array.from(device.watchedPlaylists);
                 console.log(`Playlist Array in New: ${playlistIdArray}`);
                 const getNewTracksFunctionArray = [];
                 for (const playlistId of playlistIdArray) {
@@ -331,40 +464,21 @@ exports.handler = async (event) => {
         // const playlists = ["6omtoYWO4IMVgUNF0vNI8L"]; // test
         console.log(playlists);
 
-        // Update Playlist and Tracks tables by removing tracks over 24 hours
-        let songTrackerTableQueryParam = {
-            TableName: songTrackerTableName,
-            IndexName: "playlistId-index",
-            KeyConditionExpression: "playlistId = :playlistId",
-            // FilterExpression: "stopNotification = :stopNotificationBooleanString",
-        };
-        // Tracks to see if notification should be sent
-        // let shouldSendNotificationCounter = 0;
+        // TODO:Find best way to handle expired tokens. Handle 401 issues.
         const spotifyToken = await fetchSpotifyToken();
-        for (const currentPlaylistId of playlists) {
-            console.log(`========>${currentPlaylistId}<========`);
-            // Get spotify Token
-            // TODO:Find best way to handle expired tokens. Handle 401 issues.
-            songTrackerTableQueryParam.ExpressionAttributeValues = {
-                ":playlistId": currentPlaylistId
-            };
-            const [tracks, songQueryResponse] = await Promise.all([getTracksAddedInTheLast24Hours(currentPlaylistId, spotifyToken), documentClient.query(songTrackerTableQueryParam).promise()]);
-            const queriedSongs = songQueryResponse.Items ?? [];
-            if (tracks.length > 0) { // IF there's at least one track
-                for (const trackItem of tracks) {
-                    if (trackItem.track) {
-                        // Check if current track is in queried tracks from dynamo
-                        const getTrackFromPlaylistFilter = queriedSongs.filter(currentSong => currentSong.trackId === trackItem.track.id);
-                        if (getTrackFromPlaylistFilter.length === 0) {
-                            console.log(`Adding track to dynamo ${JSON.stringify(trackItem)}`);
-                            await addTrackToDynamo(trackItem, currentPlaylistId, spotifyToken);
-                        } else {
-                            console.log(`Track ${trackItem.track.id} already tied to playlist ${currentPlaylistId}`);
-                        }
-                    }
-                }
-            }
+        // Process playlists in parallel batches; batches run sequentially to keep the
+        // Spotify request rate modest and avoid 429 rate limiting
+        const BATCH_SIZE = 10;
+        for (let i = 0; i < playlists.length; i += BATCH_SIZE) {
+            const batch = playlists.slice(i, i + BATCH_SIZE);
+            await Promise.all(batch.map(playlistId => processPlaylist(playlistId, spotifyToken)));
         }
+
+        // Surface playlists Spotify errored on so stale/blocked ones are easy to spot in CloudWatch
+        if (failedPlaylists.length > 0) {
+            console.log(`Failed playlists this run: ${JSON.stringify(failedPlaylists)}`);
+        }
+
         console.log(`Calling send notification for current time............`);
         await sendNotificationForCurrentTimeIfNeeded();
 

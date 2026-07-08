@@ -4,15 +4,15 @@
   "description": "Handles the core mechanism to determine when there's a new playlist",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "zip -r songUpdaterFetchNewSong.zip index.js",
+    "deploy": "aws lambda update-function-code --function-name songUpdaterFetchNewSong --zip-file fileb://songUpdaterFetchNewSong.zip"
   },
   "author": "Bori Oludemi",
   "license": "ISC",
-  "dependencies": {
-    "aws-sdk": "^2.828.0",
-    "btoa": "^1.2.1",
-    "node-fetch": "^2.6.7",
-    "qs": "^6.9.6",
-    "uuid": "^8.3.2"
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.600.0",
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@aws-sdk/lib-dynamodb": "^3.600.0"
   }
 }
