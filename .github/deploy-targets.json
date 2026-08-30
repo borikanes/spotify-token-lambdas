@@ -1,0 +1,35 @@
+{
+  "_comment": "Maps each lambda directory to its AWS function names and deploy artifact. Read by .github/workflows/ci.yml and drift-check.yml so the mapping lives in exactly one place. A null 'qa' means the function has no QA counterpart: it serves both API Gateway stages via stage variables, so changes to it reach production without a QA rehearsal.",
+  "lambdas": {
+    "clean-playlist-generator": {
+      "qa": "cleanPlaylistGeneratorQA",
+      "prod": "cleanPlaylistGenerator",
+      "zip": "cleanPlaylistGenerator.zip"
+    },
+    "fetch-new-song": {
+      "qa": "songUpdaterFetchNewSongQA",
+      "prod": "songUpdaterFetchNewSong",
+      "zip": "songUpdaterFetchNewSong.zip"
+    },
+    "get-feedback-help": {
+      "qa": null,
+      "prod": "spotify-feedback-handler-development",
+      "zip": "get-feedback-help.zip"
+    },
+    "playlist-table-handler": {
+      "qa": null,
+      "prod": "playlist-table-handler",
+      "zip": "playlist-table-handler.zip"
+    },
+    "spotify-api-token-lambda": {
+      "qa": "spotifyApiTokenQA",
+      "prod": "spotifyApiToken",
+      "zip": "spotifyApiToken.zip"
+    },
+    "spotify-refresh-token-lambda": {
+      "qa": "spotifyRefreshTokenQA",
+      "prod": "spotifyRefreshToken",
+      "zip": "spotifyRefreshToken.zip"
+    }
+  }
+}

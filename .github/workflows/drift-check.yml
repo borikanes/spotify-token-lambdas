@@ -1,0 +1,37 @@
+name: Drift check
+
+# Answers one question daily: does what is deployed still match main?
+#
+# The pipeline should make drift impossible, but only for changes that go
+# through it. A console edit, a local `npm run deploy`, or a half-finished
+# deploy all bypass it — this is what notices.
+
+on:
+  schedule:
+    # 13:00 UTC daily (roughly 9am ET), after any overnight activity.
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: deployed code vs main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # The QA role is used deliberately: it can read every function but can
+          # only write to QA ones, and this job never needs to write at all.
+          role-to-assume: arn:aws:iam::489099695807:role/songupdater-gha-qa
+          aws-region: us-east-1
+
+      - name: Compare deployed code against main
+        run: python3 .github/scripts/drift_check.py

@@ -1,0 +1,243 @@
+name: CI
+
+# Tests run on every PR and every push to main. Deploys only ever happen from
+# main: QA automatically, production behind a required approval on the
+# "production" GitHub Environment. The prod IAM role's trust policy only accepts
+# tokens whose subject is "...:environment:production", so the approval gate is
+# enforced by AWS, not just by the Actions UI.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never let two deploys of the same branch race each other onto a function.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: 22
+
+jobs:
+  test:
+    name: test (${{ matrix.lambda }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lambda:
+          - clean-playlist-generator
+          - fetch-new-song
+          - get-feedback-help
+          - playlist-table-handler
+          - spotify-api-token-lambda
+          - spotify-refresh-token-lambda
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.lambda }}
+        run: npm ci
+
+      - name: Run tests
+        working-directory: ${{ matrix.lambda }}
+        run: npm test
+
+  # Works out which lambda directories a push actually touched, so a one-line
+  # change to one lambda does not redeploy the other five.
+  changed:
+    name: detect changed lambdas
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    outputs:
+      lambdas: ${{ steps.detect.outputs.lambdas }}
+      any: ${{ steps.detect.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the parent commit to diff against.
+          fetch-depth: 0
+
+      - id: detect
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            # Manual runs redeploy everything — the escape hatch for when a
+            # deploy failed midway and AWS no longer matches main.
+            changed_files=$(git ls-files)
+          else
+            before="$EVENT_BEFORE"
+            # A new branch or a force push can leave `before` as all-zeros or a
+            # commit that no longer exists; fall back to the first parent.
+            if [ -z "$before" ] \
+              || [ "$before" = "0000000000000000000000000000000000000000" ] \
+              || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
+              before=$(git rev-parse "${SHA}~1" 2>/dev/null || echo "")
+            fi
+            if [ -z "$before" ]; then
+              changed_files=$(git ls-files)
+            else
+              changed_files=$(git diff --name-only "$before" "$SHA")
+            fi
+          fi
+
+          echo "Changed files:"
+          printf '%s\n' "$changed_files" | sed 's/^/  /'
+
+          lambdas=$(printf '%s\n' "$changed_files" | python3 .github/scripts/detect_changed.py)
+
+          echo "Lambdas to deploy: $lambdas"
+          echo "lambdas=$lambdas" >> "$GITHUB_OUTPUT"
+          if [ "$lambdas" = "[]" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy-qa:
+    name: deploy to QA (${{ matrix.lambda }})
+    needs: [test, changed]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    environment: qa
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        lambda: ${{ fromJSON(needs.changed.outputs.lambdas) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve deploy target
+        id: target
+        run: |
+          set -euo pipefail
+          qa=$(python3 -c "import json;print(json.load(open('.github/deploy-targets.json'))['lambdas']['${{ matrix.lambda }}']['qa'] or '')")
+          zip=$(python3 -c "import json;print(json.load(open('.github/deploy-targets.json'))['lambdas']['${{ matrix.lambda }}']['zip'])")
+          echo "function=$qa" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          if [ -z "$qa" ]; then
+            echo "::notice::${{ matrix.lambda }} has no QA function — it serves both stages, so it deploys in the production job only."
+          fi
+
+      - name: Build
+        if: steps.target.outputs.function != ''
+        working-directory: ${{ matrix.lambda }}
+        run: |
+          npm ci --omit=dev
+          npm run build
+
+      - name: Configure AWS credentials
+        if: steps.target.outputs.function != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::489099695807:role/songupdater-gha-qa
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy
+        if: steps.target.outputs.function != ''
+        working-directory: ${{ matrix.lambda }}
+        run: |
+          set -euo pipefail
+          aws lambda update-function-code \
+            --function-name "${{ steps.target.outputs.function }}" \
+            --zip-file "fileb://${{ steps.target.outputs.zip }}" \
+            --region "$AWS_REGION" \
+            --no-cli-pager > /dev/null
+          aws lambda wait function-updated \
+            --function-name "${{ steps.target.outputs.function }}" \
+            --region "$AWS_REGION"
+          echo "Deployed ${{ matrix.lambda }} to ${{ steps.target.outputs.function }}"
+
+      - name: Verify deployed code matches this commit
+        if: steps.target.outputs.function != ''
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_deployed.py \
+            "${{ steps.target.outputs.function }}" \
+            "${{ matrix.lambda }}/index.js"
+
+  deploy-prod:
+    name: deploy to production (${{ matrix.lambda }})
+    needs: [test, changed, deploy-qa]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    # Requires a reviewer on the "production" environment. The prod IAM role
+    # additionally refuses any token not issued for this environment.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        lambda: ${{ fromJSON(needs.changed.outputs.lambdas) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve deploy target
+        id: target
+        run: |
+          set -euo pipefail
+          prod=$(python3 -c "import json;print(json.load(open('.github/deploy-targets.json'))['lambdas']['${{ matrix.lambda }}']['prod'])")
+          zip=$(python3 -c "import json;print(json.load(open('.github/deploy-targets.json'))['lambdas']['${{ matrix.lambda }}']['zip'])")
+          echo "function=$prod" >> "$GITHUB_OUTPUT"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: ${{ matrix.lambda }}
+        run: |
+          npm ci --omit=dev
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::489099695807:role/songupdater-gha-prod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy
+        working-directory: ${{ matrix.lambda }}
+        run: |
+          set -euo pipefail
+          aws lambda update-function-code \
+            --function-name "${{ steps.target.outputs.function }}" \
+            --zip-file "fileb://${{ steps.target.outputs.zip }}" \
+            --region "$AWS_REGION" \
+            --no-cli-pager > /dev/null
+          aws lambda wait function-updated \
+            --function-name "${{ steps.target.outputs.function }}" \
+            --region "$AWS_REGION"
+          echo "Deployed ${{ matrix.lambda }} to ${{ steps.target.outputs.function }}"
+
+      - name: Verify deployed code matches this commit
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_deployed.py \
+            "${{ steps.target.outputs.function }}" \
+            "${{ matrix.lambda }}/index.js"

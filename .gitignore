@@ -88,3 +88,7 @@ typings/
 
 # DynamoDB Local files
 .dynamodb/
+
+# Python bytecode from running the CI helper scripts locally
+__pycache__/
+*.pyc
