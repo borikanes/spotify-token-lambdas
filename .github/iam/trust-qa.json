@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "GitHubActionsQADeployAndDriftCheck",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::489099695807:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": [
+            "repo:borikanes/spotify-token-lambdas:environment:qa",
+            "repo:borikanes/spotify-token-lambdas:ref:refs/heads/main"
+          ]
+        }
+      }
+    }
+  ]
+}

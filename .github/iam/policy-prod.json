@@ -1,0 +1,43 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeployProdFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:489099695807:function:songUpdaterFetchNewSong",
+        "arn:aws:lambda:us-east-1:489099695807:function:cleanPlaylistGenerator",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyApiToken",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyRefreshToken",
+        "arn:aws:lambda:us-east-1:489099695807:function:playlist-table-handler",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotify-feedback-handler-development",
+        "arn:aws:lambda:us-east-1:489099695807:function:APNProd"
+      ]
+    },
+    {
+      "Sid": "ReadAllSongUpdaterFunctions",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration"
+      ],
+      "Resource": "arn:aws:lambda:us-east-1:489099695807:function:*"
+    },
+    {
+      "Sid": "ReadAPNsSigningKey",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:us-east-1:489099695807:parameter/songupdater/apns/signing-key"
+    },
+    {
+      "Sid": "InvokeAPNProdForSmokeTest",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:us-east-1:489099695807:function:APNProd"
+    }
+  ]
+}

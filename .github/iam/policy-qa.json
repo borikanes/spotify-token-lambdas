@@ -1,0 +1,38 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeployQAFunctionsOnly",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:UpdateFunctionCode",
+        "lambda:UpdateFunctionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:489099695807:function:songUpdaterFetchNewSongQA",
+        "arn:aws:lambda:us-east-1:489099695807:function:cleanPlaylistGeneratorQA",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyApiTokenQA",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyRefreshTokenQA",
+        "arn:aws:lambda:us-east-1:489099695807:function:playlist-table-handlerQA",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotify-feedback-handlerQA"
+      ]
+    },
+    {
+      "Sid": "ReadAllSongUpdaterFunctionsForDriftCheck",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-1:489099695807:function:songUpdaterFetchNewSong*",
+        "arn:aws:lambda:us-east-1:489099695807:function:cleanPlaylistGenerator*",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyApiToken*",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotifyRefreshToken*",
+        "arn:aws:lambda:us-east-1:489099695807:function:APNProd",
+        "arn:aws:lambda:us-east-1:489099695807:function:playlist-table-handler*",
+        "arn:aws:lambda:us-east-1:489099695807:function:spotify-feedback-handler*"
+      ]
+    }
+  ]
+}
