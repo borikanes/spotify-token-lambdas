@@ -1,5 +1,5 @@
 {
-  "_comment": "Maps each lambda directory to its AWS function names and deploy artifact. Read by .github/workflows/ci.yml and drift-check.yml so the mapping lives in exactly one place. A null 'qa' means the function has no QA counterpart: it serves both API Gateway stages via stage variables, so changes to it reach production without a QA rehearsal.",
+  "_comment": "Maps each lambda directory to its AWS function names and deploy artifact. Read by .github/workflows/ci.yml and drift-check.yml so the mapping lives in exactly one place. Every lambda now has a QA counterpart, so every change gets a QA rehearsal before the production approval. APNProd (in the apn-lambda-go repo) is deliberately the one exception: it picks the sandbox or production APNs endpoint by bundle ID, so a single function serves both environments correctly.",
   "lambdas": {
     "clean-playlist-generator": {
       "qa": "cleanPlaylistGeneratorQA",
@@ -12,12 +12,12 @@
       "zip": "songUpdaterFetchNewSong.zip"
     },
     "get-feedback-help": {
-      "qa": null,
+      "qa": "spotify-feedback-handlerQA",
       "prod": "spotify-feedback-handler-development",
       "zip": "get-feedback-help.zip"
     },
     "playlist-table-handler": {
-      "qa": null,
+      "qa": "playlist-table-handlerQA",
       "prod": "playlist-table-handler",
       "zip": "playlist-table-handler.zip"
     },
