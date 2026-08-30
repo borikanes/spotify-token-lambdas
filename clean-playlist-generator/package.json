@@ -4,7 +4,7 @@
   "description": "Generates a clean (non-explicit) copy of a playlist for the requesting user",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "build": "zip -r cleanPlaylistGenerator.zip index.js",
     "deploy": "aws lambda update-function-code --function-name cleanPlaylistGenerator --zip-file fileb://cleanPlaylistGenerator.zip"
   },

@@ -657,6 +657,16 @@ async function processCleanJob(jobEvent) {
  * @param {Object} context - Lambda context.
  * @returns {Promise<Object|void>} API Gateway-style response for HTTP paths; nothing for the async worker path.
  */
+// Exported for unit tests only — not part of the lambda's runtime contract.
+// The AWS clients are exposed so tests can stub `send` and assert on the commands
+// built for them without touching DynamoDB or invoking a real Lambda.
+exports._test = {
+    searchForCleanVersion,
+    resolveCleanTrackUri,
+    documentClient,
+    lambdaClient
+};
+
 exports.handler = async (event, context) => {
     environmentFromStageVariable = event.stageVariables || {};
 
