@@ -4,13 +4,16 @@
   "description": "Accepts message from app and sends to admin email",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --test",
+    "build": "zip -r get-feedback-help.zip index.js",
+    "deploy": "aws lambda update-function-code --function-name spotify-feedback-handler-development --zip-file fileb://get-feedback-help.zip"
   },
-  "dependencies": {
-    "aws-sdk": "^2.828.0"
+  "dependencies": {},
+  "devDependencies": {
+    "@aws-sdk/client-ses": "^3.600.0"
   },
   "engines": {
-    "node": "10.x"
+    "node": "22.x"
   },
   "author": "Bori Oludemi",
   "license": "ISC"
