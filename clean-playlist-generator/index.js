@@ -460,8 +460,11 @@ async function handleGetJobStatus(event) {
  */
 async function listJobsForDevice(deviceId) {
     // ScanIndexForward:false gives newest-first straight from the index, since the
-    // GSI's range key is createdAt
-    const result = await documentClient.send(new QueryCommand({
+    // GSI's range key is createdAt.
+    // Paginated because FilterExpression is applied AFTER the 1MB read limit: a
+    // device with many failed jobs could otherwise have its completed ones split
+    // across pages and silently truncated.
+    const queryParams = {
         TableName: cleanPlaylistJobsTableName,
         IndexName: 'deviceId-index',
         KeyConditionExpression: 'deviceId = :deviceId',
@@ -469,9 +472,16 @@ async function listJobsForDevice(deviceId) {
         ExpressionAttributeNames: { '#status': 'status' },
         ExpressionAttributeValues: { ':deviceId': deviceId, ':complete': 'complete' },
         ScanIndexForward: false
-    }));
+    };
+    const items = [];
+    let result;
+    do {
+        result = await documentClient.send(new QueryCommand(queryParams));
+        items.push(...(result.Items || []));
+        queryParams.ExclusiveStartKey = result.LastEvaluatedKey;
+    } while (result.LastEvaluatedKey);
 
-    const jobs = (result.Items || []).map(item => ({
+    const jobs = items.map(item => ({
         jobId: item.jobId,
         newPlaylistId: item.newPlaylistId,
         newPlaylistName: item.newPlaylistName,
