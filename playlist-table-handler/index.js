@@ -13,6 +13,21 @@ const resourceBucket = "song-updater-resources";
 var playlistFileKey = "playlists.json";
 var notificationTrackerTableName = "NotificationTracker";
 
+/**
+ * Points the module-level table/key names at the QA or prod resources for this
+ * invocation.
+ *
+ * Both branches assign every name unconditionally. This one function serves both
+ * API Gateway stages, and the names are module-level state that survives between
+ * invocations on a warm container — so without the else branch, a container that
+ * handled a QA request kept the QA table names and routed every subsequent PROD
+ * request to the QA tables until it was recycled.
+ *
+ * @param {Object|undefined} stageVariables - The event's API Gateway stage variables.
+ * @returns {void}
+ * Side effects: reassigns playlistTableName, songTrackerTableName, playlistFileKey
+ * and notificationTrackerTableName.
+ */
 function setGlobalVariables(stageVariables) {
     if (stageVariables && stageVariables.environment === 'qa') {
         console.log('===================== Setting QA environment =====================');
@@ -20,8 +35,11 @@ function setGlobalVariables(stageVariables) {
         songTrackerTableName = "SongTrackMapperQA";
         playlistFileKey = "playlists-qa.json";
         notificationTrackerTableName = "NotificationTrackerQA";
-
-        return;
+    } else {
+        playlistTableName = "WatchedPlaylists";
+        songTrackerTableName = "SongTrackMapper";
+        playlistFileKey = "playlists.json";
+        notificationTrackerTableName = "NotificationTracker";
     }
 }
 

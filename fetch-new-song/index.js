@@ -8,7 +8,9 @@ var watchedPlaylistsTableName = process.env.WATCHED_PLAYLISTS_TABLE ? process.en
 var resourceBucket = "song-updater-resources";
 var playlistFileKey = process.env.PLAYLIST_FILE_KEY ? process.env.PLAYLIST_FILE_KEY : "playlists.json";
 var songTrackerTableName = process.env.SONG_TRACKER_TABLE ? process.env.SONG_TRACKER_TABLE : "SongTrackMapper";
-var environmentFromStageVariable = "";
+// Holds the whole stageVariables object; read the .environment field off it rather
+// than comparing the object itself (see sendNotificationForCurrentTimeIfNeeded).
+var environmentFromStageVariable = {};
 const ONE_DAY_IN_MILLISECONDS = 86400;
 
 const spotifyBaseURL = "https://api.spotify.com/v1";
@@ -245,7 +247,10 @@ async function sendNotificationForCurrentTimeIfNeeded() {
                 	    },
                 	    body: JSON.stringify(apnPayload)
                 	}
-                    const environmentForURL = (environmentFromStageVariable === 'qa') ? "QA" : "prod"
+                    // .environment, not the object itself: environmentFromStageVariable
+                    // holds the whole stageVariables object, so comparing it directly to
+                    // the string never matched and this always resolved to "prod"
+                    const environmentForURL = (environmentFromStageVariable.environment === 'qa') ? "QA" : "prod"
                     let res = await fetch(`https://ho7won2i0j.execute-api.us-east-1.amazonaws.com/${environmentForURL}/send-notifications`, config);
             		let data = await res.json();
                     if (data.statusCode === 200) {
@@ -423,14 +428,19 @@ exports._test = {
     isTimeWithin24Hours,
     removeDuplicatesFromTrackArray,
     getTracksAddedInTheLast24Hours,
+    sendNotificationForCurrentTimeIfNeeded,
+    documentClient,
     getFailedPlaylists: () => failedPlaylists,
-    resetFailedPlaylists: () => { failedPlaylists = []; }
+    resetFailedPlaylists: () => { failedPlaylists = []; },
+    setEnvironmentFromStageVariable: (value) => { environmentFromStageVariable = value; }
 };
 
 exports.handler = async (event) => {
     console.log(`Top of event`);
     // Set variables based on environment
-    environmentFromStageVariable = event.stageVariables;
+    // Defaults to {} so a cron invocation (which carries no stageVariables) reads
+    // as prod rather than throwing on the .environment lookup
+    environmentFromStageVariable = event.stageVariables || {};
     // Reset per-run state since module scope persists across warm invocations
     failedPlaylists = [];
 

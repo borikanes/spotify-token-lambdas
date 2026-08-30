@@ -4,12 +4,14 @@
   "description": "/api/token path to get token from spotify's API",
   "main": "index.js",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "build": "zip -r spotifyApiToken.zip index.js",
+    "deploy": "aws lambda update-function-code --function-name spotifyApiToken --zip-file fileb://spotifyApiToken.zip",
+    "deploy:qa": "aws lambda update-function-code --function-name spotifyApiTokenQA --zip-file fileb://spotifyApiToken.zip"
   },
-  "dependencies": {
-    "axios": "^0.22.0",
-    "btoa": "^1.1.2",
-    "qs": "^6.9.6"
+  "dependencies": {},
+  "engines": {
+    "node": "22.x"
   },
   "author": "Bori Oludemi",
   "license": "ISC"

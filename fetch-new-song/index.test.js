@@ -6,8 +6,11 @@ const {
     isTimeWithin24Hours,
     removeDuplicatesFromTrackArray,
     getTracksAddedInTheLast24Hours,
+    sendNotificationForCurrentTimeIfNeeded,
+    documentClient,
     getFailedPlaylists,
-    resetFailedPlaylists
+    resetFailedPlaylists,
+    setEnvironmentFromStageVariable
 } = lambda._test;
 
 /**
@@ -180,5 +183,64 @@ describe('getTracksAddedInTheLast24Hours', () => {
 
         assert.deepEqual(tracks.map(t => t.track.id), ['a']);
         assert.deepEqual(getFailedPlaylists(), [{ playlistId: 'pl1', status: 429 }]);
+    });
+});
+
+describe('notification service URL selection', () => {
+    /**
+     * Stubs the two DynamoDB queries the notification path makes: the device lookup
+     * on preferredNotificationTimeIndex, and the per-playlist new-track check.
+     *
+     * @returns {void}
+     */
+    function stubNotificationQueries() {
+        mock.method(documentClient, 'send', async (command) => {
+            if (command.input.IndexName === 'preferredNotificationTimeIndex') {
+                return { Items: [{ deviceId: 'dev1', deviceToken: 'token1', watchedPlaylists: ['pl1'] }] };
+            }
+            return { Items: [{ id: 't1' }] };
+        });
+    }
+
+    /**
+     * Runs the notification path for a given stage-variable value and returns the
+     * notification-service URL it called.
+     *
+     * @param {Object} stageVariables - Value to install as the event's stage variables.
+     * @returns {Promise<string>} The URL passed to fetch.
+     */
+    async function urlCalledFor(stageVariables) {
+        stubNotificationQueries();
+        let calledUrl;
+        mock.method(globalThis, 'fetch', async (url) => {
+            calledUrl = url;
+            return response(200, { statusCode: 200 });
+        });
+        setEnvironmentFromStageVariable(stageVariables);
+
+        await sendNotificationForCurrentTimeIfNeeded();
+
+        return calledUrl;
+    }
+
+    test('uses the QA notification stage when the stage variable says qa', async () => {
+        // environmentFromStageVariable holds the whole stageVariables object, so
+        // comparing it directly to the string 'qa' never matched and every QA run
+        // posted to the prod notification stage.
+        const url = await urlCalledFor({ environment: 'qa' });
+
+        assert.match(url, /\/QA\/send-notifications$/);
+    });
+
+    test('uses the prod notification stage for a prod stage variable', async () => {
+        const url = await urlCalledFor({ environment: 'prod' });
+
+        assert.match(url, /\/prod\/send-notifications$/);
+    });
+
+    test('defaults to the prod stage for a cron run with no stage variables', async () => {
+        const url = await urlCalledFor({});
+
+        assert.match(url, /\/prod\/send-notifications$/);
     });
 });

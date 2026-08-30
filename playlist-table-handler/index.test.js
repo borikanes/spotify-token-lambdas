@@ -188,13 +188,7 @@ describe('stage-variable table selection', () => {
         assert.equal(calls[0].params.TableName, 'NotificationTrackerQA');
     });
 
-    // KNOWN FAILING — documents a real bug rather than asserting current behavior.
-    // setGlobalVariables() sets the QA table names but has no else branch restoring
-    // the prod ones, and the names are module-level vars. Since a single Lambda
-    // function serves both API Gateway stages, a warm container that handled a QA
-    // request routes every subsequent PROD request to the QA tables until it is
-    // recycled. Fix is an else branch resetting the four names to their prod values.
-    test('routes a prod request to the prod tables even after a QA request', { todo: 'setGlobalVariables never resets to prod names' }, async () => {
+    test('routes a prod request to the prod tables even after a QA request', async () => {
         // One Lambda function serves BOTH stages here, and the table names are
         // module-level vars. A warm container that handled a QA request must not
         // keep the QA table names for the next prod request.

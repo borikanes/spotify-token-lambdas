@@ -1,34 +1,51 @@
-const btoa = require('btoa');
-const axios = require('axios');
-const qs = require('qs');
+// Uses global fetch (Node 18+) and Buffer, so this lambda has no runtime
+// dependencies and its deploy zip is just index.js — matching
+// spotify-refresh-token-lambda, its sibling in the OAuth flow.
 
+/**
+ * Exchanges a Spotify authorization code for an access/refresh token pair.
+ *
+ * This backs the SpotifyiOS SDK's tokenSwapURL, so the resolved value must be the
+ * raw Spotify token JSON — the SDK parses it directly and does not unwrap a
+ * statusCode envelope.
+ *
+ * @param {Object} event - API Gateway event. The mapping template turns the
+ *   form-urlencoded body into `data`, so the authorization code is `event.data.code`.
+ * @returns {Promise<Object>} Spotify's token JSON on success. On failure, Spotify's
+ *   error JSON (e.g. `{ error: 'invalid_grant', ... }`), or `{ error, error_description }`
+ *   describing a transport failure — never a token, so the SDK treats it as a failure.
+ */
 exports.handler = async (event) => {
-	const config = {
-	    method: "POST",
-	    url: "https://accounts.spotify.com/api/token",
-	    headers: {
-	      "Content-Type": "application/x-www-form-urlencoded",
-		  'Authorization': 'Basic ' + (new Buffer.from(process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET).toString('base64'))
-	    },
-	    data: {
-	      grant_type: 'authorization_code',
-	      redirect_uri: process.env.SPOTIFY_CLIENT_CALLBACK_URL,
-	      code: event.data.code // authorization code is passed in the body as key "code"
-	    }
-	}
+    const credentials = Buffer.from(
+        process.env.SPOTIFY_CLIENT_ID + ':' + process.env.SPOTIFY_CLIENT_SECRET
+    ).toString('base64');
 
-	try {
-		// url encode data to send to spotify
-		config.data = qs.stringify(config.data)
+    try {
+        const response = await fetch('https://accounts.spotify.com/api/token', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': 'Basic ' + credentials
+            },
+            body: new URLSearchParams({
+                grant_type: 'authorization_code',
+                redirect_uri: process.env.SPOTIFY_CLIENT_CALLBACK_URL,
+                // authorization code is passed in the body as key "code"
+                code: event.data.code
+            })
+        });
 
-		let res = await axios(config);
-		let data = res.data;
-
-		return data;
-	} catch(err) {
-		console.log(err);
-		return err;
-	}
+        // Read the body either way — Spotify explains a 400 in the JSON, and that
+        // detail is the only way to tell a bad code from a bad redirect_uri.
+        const body = await response.json();
+        if (!response.ok) {
+            console.log(`Spotify token swap failed with ${response.status}: ${JSON.stringify(body)}`);
+        }
+        return body;
+    } catch (error) {
+        console.log(`Error swapping Spotify authorization code: ${error.message}`);
+        return { error: 'token_swap_failed', error_description: error.message };
+    }
 };
 
 /*
