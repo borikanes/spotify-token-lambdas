@@ -1,0 +1,60 @@
+name: OIDC debug
+
+# Temporary diagnostic: prints the non-secret claims (sub, aud, repository) of
+# the GitHub OIDC token so the IAM trust policy can be matched against reality
+# instead of assumption. Delete once the QA role assumes cleanly.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claims-with-environment:
+    name: claims inside the qa environment
+    runs-on: ubuntu-latest
+    environment: qa
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Print sub/aud claims
+        run: |
+          set -euo pipefail
+          # Request a token for the same audience the AWS action uses.
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | python3 -c "import json,sys;print(json.load(sys.stdin)['value'])")
+
+          # Decode the payload only, and print only the claims needed to build a
+          # trust policy. Never print the token itself.
+          python3 - "$token" <<'PY'
+          import base64, json, sys
+          payload = sys.argv[1].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ('sub', 'aud', 'repository', 'environment', 'ref', 'workflow_ref'):
+              print(f"{key}: {claims.get(key)!r}")
+          PY
+
+  claims-without-environment:
+    name: claims with no environment
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Print sub/aud claims
+        run: |
+          set -euo pipefail
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | python3 -c "import json,sys;print(json.load(sys.stdin)['value'])")
+
+          python3 - "$token" <<'PY'
+          import base64, json, sys
+          payload = sys.argv[1].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          for key in ('sub', 'aud', 'repository', 'environment', 'ref', 'workflow_ref'):
+              print(f"{key}: {claims.get(key)!r}")
+          PY
