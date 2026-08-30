@@ -416,6 +416,17 @@ async function processPlaylist(playlistId, spotifyToken) {
  * @throws Rethrows fatal errors (S3 read failure, Spotify token failure) so the
  *   invocation is marked as failed in CloudWatch.
  */
+// Exported for unit tests only — not part of the lambda's runtime contract.
+// getFailedPlaylists/resetFailedPlaylists expose the run-scoped failure list so
+// tests can assert on it without importing module state directly.
+exports._test = {
+    isTimeWithin24Hours,
+    removeDuplicatesFromTrackArray,
+    getTracksAddedInTheLast24Hours,
+    getFailedPlaylists: () => failedPlaylists,
+    resetFailedPlaylists: () => { failedPlaylists = []; }
+};
+
 exports.handler = async (event) => {
     console.log(`Top of event`);
     // Set variables based on environment

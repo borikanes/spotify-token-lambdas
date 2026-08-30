@@ -89,6 +89,11 @@ async function addItemToPlaylistArrayInS3(playlistId) {
     }
 }
 
+// Exported for unit tests only — not part of the lambda's runtime contract.
+// The AWS clients are exposed so tests can stub them and assert on the params
+// built for each call without touching DynamoDB or S3.
+exports._test = { documentClient, s3, setGlobalVariables };
+
 exports.handler = async (event) => {
     // Set variables based on environment on
     console.log(JSON.stringify(event));

@@ -17,6 +17,11 @@ const ses = new SESClient({ region: 'us-east-1' });
  *   predates the v3 migration; it surfaces a malformed gateway mapping loudly
  *   rather than emailing an empty message.
  */
+// Exported for unit tests only — not part of the lambda's runtime contract.
+// The SES client is exposed so tests can stub `send` and assert on the command
+// built for it without sending mail.
+exports._test = { ses };
+
 exports.handler = async (event) => {
     const params = {
         Destination: {

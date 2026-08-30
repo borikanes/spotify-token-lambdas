@@ -4,7 +4,7 @@
   "description": "Handles the core mechanism to determine when there's a new playlist",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test",
     "build": "zip -r songUpdaterFetchNewSong.zip index.js",
     "deploy": "aws lambda update-function-code --function-name songUpdaterFetchNewSong --zip-file fileb://songUpdaterFetchNewSong.zip"
   },
