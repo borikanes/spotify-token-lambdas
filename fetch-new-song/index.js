@@ -440,7 +440,9 @@ exports.handler = async (event) => {
             }
             const data = await documentClient.send(new GetCommand(getParams));
             const device = data.Item;
-            if (!device.watchedPlaylists) {
+            // An unregistered device id returns no Item at all — dereferencing it
+            // threw and surfaced as a 502 rather than the intended 404
+            if (!device || !device.watchedPlaylists) {
                 response.statusCode = 404; // Returning not found if there are no watched Playlists. Basically a hack and easier for the front end to parse
             } else {
                 response.statusCode = 200;
