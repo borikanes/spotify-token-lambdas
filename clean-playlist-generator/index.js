@@ -89,7 +89,10 @@ async function getAllPlaylistTracks(playlistId, clientToken) {
  *
  * @param {Object} track - Spotify track object (from a playlist item) to find a clean version of.
  * @param {string} clientToken - Client-credentials Spotify access token.
- * @returns {Promise<Object|null>} The matching clean track object, or null if none was found.
+ * @returns {Promise<{searched: boolean, match: Object|null}>} `searched` is false when
+ *   the request itself failed (rate limit, expired token, 5xx). Callers MUST NOT treat
+ *   that as "no clean version exists" — the distinction is what keeps a transient
+ *   Spotify error from being cached as a permanent negative.
  */
 async function searchForCleanVersion(track, clientToken) {
     const primaryArtist = track.artists && track.artists[0] ? track.artists[0].name : '';
@@ -98,19 +101,20 @@ async function searchForCleanVersion(track, clientToken) {
 
     const res = await fetch(url, { headers: { Authorization: `Bearer ${clientToken}` } });
     if (res.status !== 200) {
-        console.log(`Search failed for track ${track.id} with status ${res.status}`);
-        return null;
+        console.log(`Search FAILED (not a miss) for track ${track.id} with status ${res.status}`);
+        return { searched: false, match: null };
     }
     const data = await res.json();
     const items = (data.tracks && data.tracks.items) || [];
     const normalizedArtist = primaryArtist.toLowerCase();
     const normalizedName = track.name.toLowerCase();
 
-    return items.find(candidate =>
+    const match = items.find(candidate =>
         candidate.explicit === false &&
         candidate.name.toLowerCase() === normalizedName &&
         candidate.artists.some(a => a.name.toLowerCase() === normalizedArtist)
     ) || null;
+    return { searched: true, match };
 }
 
 /**
@@ -134,7 +138,15 @@ async function resolveCleanTrackUri(track, clientToken) {
         return cached.Item.status === 'no_clean_version' ? null : cached.Item.cleanTrackUri;
     }
 
-    const match = await searchForCleanVersion(track, clientToken);
+    const { searched, match } = await searchForCleanVersion(track, clientToken);
+
+    // A failed request is NOT evidence that no clean version exists. Caching it as
+    // one would poison this shared, TTL-less table permanently for every user, so
+    // leave the track unresolved and let a later run settle it.
+    if (!searched) {
+        return null;
+    }
+
     const now = new Date().toISOString();
 
     await documentClient.send(new PutCommand({
@@ -559,8 +571,12 @@ async function processCleanJob(jobEvent) {
         const clientToken = await fetchSpotifyToken();
         const { tracks, playlistTitle } = await getAllPlaylistTracks(playlistId, clientToken);
         // Source titles often carry trailing whitespace, which would render as
-        // "Name  (Clean)" with a double space
-        const finalName = playlistName || `${(playlistTitle || '').trim()} (Clean)`;
+        // "Name  (Clean)" with a double space. Capped because Spotify rejects
+        // playlist names over 100 characters — a long source title plus the
+        // " (Clean)" suffix can cross that on its own.
+        const SPOTIFY_MAX_PLAYLIST_NAME = 100;
+        const finalName = (playlistName || `${(playlistTitle || '').trim()} (Clean)`)
+            .slice(0, SPOTIFY_MAX_PLAYLIST_NAME);
 
         let skippedCount = 0;
         const finalUris = [];
@@ -597,6 +613,14 @@ async function processCleanJob(jobEvent) {
         }
         if (duplicateCount > 0) {
             console.log(`Job ${jobId}: dropped ${duplicateCount} duplicate track(s)`);
+        }
+
+        // Creating an empty playlist leaves the user litter to clean up, so report
+        // it instead. The app maps this code to a plain-language explanation.
+        if (finalUris.length === 0) {
+            console.log(`Job ${jobId}: nothing to add (${skippedCount} skipped); not creating an empty playlist`);
+            await updateJobStatus(jobId, 'error', { error: 'NO_CLEAN_VERSIONS' });
+            return;
         }
 
         const spotifyUserId = await getSpotifyUserId(userAccessToken);
