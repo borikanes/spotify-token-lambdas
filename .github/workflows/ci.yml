@@ -178,9 +178,25 @@ jobs:
             "${{ steps.target.outputs.function }}" \
             "${{ matrix.lambda }}/index.js"
 
+  # Checks the deployed API's wire format from the outside. Unit tests cannot
+  # cover this: what the client receives depends on the API Gateway integration
+  # type, not just on what the lambda returns. A proxy-shaped payload on a
+  # non-proxy endpoint broke token refresh for every user on 2026-08-30 while
+  # the unit tests stayed green.
+  #
+  # Gates production: if QA's contract is wrong, the prod deploy never runs.
+  smoke-qa:
+    name: verify QA endpoint contracts
+    needs: [changed, deploy-qa]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/smoke_endpoints.py qa
+
   deploy-prod:
     name: deploy to production (${{ matrix.lambda }})
-    needs: [test, changed, deploy-qa]
+    needs: [test, changed, deploy-qa, smoke-qa]
     if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
     runs-on: ubuntu-latest
     # Requires a reviewer on the "production" environment. The prod IAM role
@@ -241,3 +257,12 @@ jobs:
           python3 .github/scripts/verify_deployed.py \
             "${{ steps.target.outputs.function }}" \
             "${{ matrix.lambda }}/index.js"
+
+  smoke-prod:
+    name: verify production endpoint contracts
+    needs: [changed, deploy-prod]
+    if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 .github/scripts/smoke_endpoints.py prod
