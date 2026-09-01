@@ -15,10 +15,14 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # Never let two deploys of the same branch race each other onto a function.
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
+# NOTE: concurrency is deliberately set per deploy job below, NOT here at the
+# workflow level. A workflow-level group meant that while one run sat waiting for
+# the production approval, every later push queued behind it: their tests never
+# ran, and older queued runs were silently cancelled. Two commits reached main
+# with no CI validation at all before this was noticed, and nothing surfaced it.
+#
+# Per-job, per-lambda groups keep the original guarantee (never two deploys
+# racing onto the same function) while letting tests run on every push.
 
 env:
   AWS_REGION: us-east-1
@@ -115,6 +119,10 @@ jobs:
     if: github.event_name != 'pull_request' && needs.changed.outputs.any == 'true'
     runs-on: ubuntu-latest
     environment: qa
+    concurrency:
+      # Per lambda, so different functions still deploy in parallel.
+      group: deploy-qa-${{ github.ref }}-${{ matrix.lambda }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -202,6 +210,9 @@ jobs:
     # Requires a reviewer on the "production" environment. The prod IAM role
     # additionally refuses any token not issued for this environment.
     environment: production
+    concurrency:
+      group: deploy-prod-${{ github.ref }}-${{ matrix.lambda }}
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
