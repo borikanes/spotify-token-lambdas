@@ -579,6 +579,9 @@ async function processCleanJob(jobEvent) {
             .slice(0, SPOTIFY_MAX_PLAYLIST_NAME);
 
         let skippedCount = 0;
+        // Counted so a playlist that needed no cleaning can be reported as such,
+        // rather than silently handing the user an identical copy to manage.
+        let explicitCount = 0;
         const finalUris = [];
         // Source playlists frequently contain the same track more than once, and two
         // different explicit tracks can also resolve to the same clean recording.
@@ -604,6 +607,7 @@ async function processCleanJob(jobEvent) {
                 addUri(track.uri);
                 continue;
             }
+            explicitCount += 1;
             const cleanUri = await resolveCleanTrackUri(track, clientToken);
             if (cleanUri) {
                 addUri(cleanUri);
@@ -620,6 +624,16 @@ async function processCleanJob(jobEvent) {
         if (finalUris.length === 0) {
             console.log(`Job ${jobId}: nothing to add (${skippedCount} skipped); not creating an empty playlist`);
             await updateJobStatus(jobId, 'error', { error: 'NO_CLEAN_VERSIONS' });
+            return;
+        }
+
+        // Nothing was explicit, so the "clean" copy would be identical to the
+        // source. Creating it would leave the user with a redundant playlist and
+        // no indication of why, so report it instead. Checked after the empty
+        // case above, which also has no explicit tracks when the source is empty.
+        if (explicitCount === 0) {
+            console.log(`Job ${jobId}: source has no explicit tracks; not creating a duplicate playlist`);
+            await updateJobStatus(jobId, 'error', { error: 'ALREADY_CLEAN' });
             return;
         }
 
@@ -663,6 +677,7 @@ async function processCleanJob(jobEvent) {
 exports._test = {
     searchForCleanVersion,
     resolveCleanTrackUri,
+    processCleanJob,
     documentClient,
     lambdaClient
 };

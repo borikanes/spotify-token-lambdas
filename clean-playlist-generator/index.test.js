@@ -2,7 +2,13 @@ const { test, describe, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 const lambda = require('./index.js');
-const { searchForCleanVersion, resolveCleanTrackUri, documentClient, lambdaClient } = lambda._test;
+const {
+    searchForCleanVersion,
+    resolveCleanTrackUri,
+    processCleanJob,
+    documentClient,
+    lambdaClient
+} = lambda._test;
 
 /**
  * Builds a minimal Spotify track object of the shape the lambda actually reads.
@@ -281,5 +287,110 @@ describe('handler routing and stage-variable threading', () => {
         );
 
         assert.equal(response.statusCode, 404);
+    });
+});
+
+describe('processCleanJob outcome codes', () => {
+    /**
+     * Stubs the Spotify calls the worker makes: the client-credentials token,
+     * the source playlist fetch, and any per-track searches.
+     *
+     * @param {Array<Object>} items - Playlist items, each { track }.
+     * @param {Object} [searchResult] - Search response body for explicit tracks.
+     * @returns {void}
+     */
+    function stubSpotify(items, searchResult = { tracks: { items: [] } }) {
+        mock.method(globalThis, 'fetch', async (url) => {
+            if (String(url).includes('accounts.spotify.com')) {
+                return { ok: true, status: 200, json: async () => ({ access_token: 'client-token' }) };
+            }
+            if (String(url).includes('/playlists/')) {
+                return {
+                    status: 200,
+                    json: async () => ({
+                        name: 'Source Playlist',
+                        tracks: { total: items.length, next: null, items }
+                    })
+                };
+            }
+            // /search
+            return { status: 200, json: async () => searchResult };
+        });
+    }
+
+    /**
+     * Builds a playlist item.
+     *
+     * @param {string} id - Track id.
+     * @param {boolean} explicit - Whether the track is explicit.
+     * @returns {Object} A playlist item shaped like Spotify's.
+     */
+    function playlistItem(id, explicit) {
+        return {
+            track: {
+                id,
+                name: `Track ${id}`,
+                uri: `spotify:track:${id}`,
+                explicit,
+                artists: [{ name: 'Artist' }]
+            }
+        };
+    }
+
+    /**
+     * Runs the worker and returns the job-status updates it wrote.
+     *
+     * @param {Array<Object>} items - Playlist items to process.
+     * @returns {Promise<Array<Object>>} The ExpressionAttributeValues of each update.
+     */
+    async function runJob(items) {
+        const updates = [];
+        mock.method(documentClient, 'send', async (command) => {
+            if (command.constructor.name === 'UpdateCommand') {
+                updates.push(command.input.ExpressionAttributeValues);
+            }
+            return {};
+        });
+        stubSpotify(items);
+
+        await processCleanJob({
+            jobId: 'job-1',
+            playlistId: 'pl1',
+            isPublic: false,
+            deviceId: 'dev1',
+            userAccessToken: 'user-token'
+        });
+
+        return updates;
+    }
+
+    test('reports ALREADY_CLEAN when no track is explicit', async () => {
+        // Every track passes through untouched, so the "clean" copy would be
+        // identical to the source. Creating it would leave the user a redundant
+        // playlist with no explanation.
+        const updates = await runJob([playlistItem('a', false), playlistItem('b', false)]);
+
+        const final = updates[updates.length - 1];
+        assert.equal(final[':status'], 'error');
+        assert.equal(final[':error'], 'ALREADY_CLEAN');
+    });
+
+    test('reports NO_CLEAN_VERSIONS when explicit tracks have no clean match', async () => {
+        // Boundary check: this playlist also ends up with nothing to add, but for
+        // a different reason, and must not be reported as ALREADY_CLEAN.
+        const updates = await runJob([playlistItem('a', true), playlistItem('b', true)]);
+
+        const final = updates[updates.length - 1];
+        assert.equal(final[':status'], 'error');
+        assert.equal(final[':error'], 'NO_CLEAN_VERSIONS');
+    });
+
+    test('reports NO_CLEAN_VERSIONS for an empty source playlist', async () => {
+        // No tracks at all means no explicit tracks either; the empty check must
+        // win so this is not mislabelled as "already clean".
+        const updates = await runJob([]);
+
+        const final = updates[updates.length - 1];
+        assert.equal(final[':error'], 'NO_CLEAN_VERSIONS');
     });
 });
