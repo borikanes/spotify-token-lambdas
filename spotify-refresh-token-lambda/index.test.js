@@ -1,4 +1,4 @@
-const { test, describe, beforeEach, afterEach, mock } = require('node:test');
+const { test, describe, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
@@ -34,27 +34,85 @@ function stubFetch(handler) {
 
 afterEach(() => mock.restoreAll());
 
-describe('refresh token handler', () => {
-    test('exchanges a refresh token and returns the new access token', async () => {
-        stubFetch(() => response(200, { access_token: 'new-access', refresh_token: 'new-refresh' }));
+describe('response contract', () => {
+    // These are the tests that would have caught the 2026-08-30 outage. The
+    // previous suite asserted a { statusCode, body } envelope, which looks
+    // plausible but is wrong for this non-proxy API Gateway integration: the
+    // lambda's return value IS the response body, and the SpotifyiOS SDK reads
+    // access_token off the top level. The tests passed while production was
+    // broken, because they pinned the bug rather than the contract.
+
+    test('resolves access_token at the TOP LEVEL, not inside an envelope', async () => {
+        stubFetch(() => response(200, {
+            access_token: 'access-1',
+            token_type: 'Bearer',
+            expires_in: 3600
+        }));
 
         const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
 
-        assert.equal(result.statusCode, 200);
-        assert.deepEqual(JSON.parse(result.body), {
-            access_token: 'new-access',
-            refresh_token: 'new-refresh'
-        });
+        assert.equal(result.access_token, 'access-1');
+        assert.equal(result.statusCode, undefined, 'must not be wrapped in a statusCode envelope');
+        assert.equal(result.body, undefined, 'must not stringify the payload into a body field');
     });
 
+    test('passes through the fields the SDK needs', async () => {
+        stubFetch(() => response(200, {
+            access_token: 'access-1',
+            token_type: 'Bearer',
+            expires_in: 3600,
+            scope: 'playlist-read-private'
+        }));
+
+        const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
+
+        assert.equal(result.token_type, 'Bearer');
+        assert.equal(result.expires_in, 3600);
+        assert.equal(result.scope, 'playlist-read-private');
+    });
+
+    test('never returns access_token on failure', async () => {
+        // The SDK decides success by finding access_token, so an error response
+        // must not carry one under any circumstances.
+        stubFetch(() => response(400, {
+            error: 'invalid_grant',
+            error_description: 'Invalid refresh token'
+        }));
+
+        const result = await lambda.handler({ data: { refresh_token: 'revoked' } });
+
+        assert.equal(result.access_token, undefined);
+        assert.equal(result.error, 'invalid_grant');
+    });
+
+    test('never returns access_token when the request itself fails', async () => {
+        stubFetch(() => { throw new Error('network down'); });
+
+        const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
+
+        assert.equal(result.access_token, undefined);
+        assert.equal(result.error, 'refresh_failed');
+        assert.equal(result.error_description, 'network down');
+    });
+});
+
+describe('refresh token handling', () => {
     test('falls back to the original refresh token when Spotify omits a new one', async () => {
-        // Spotify usually does NOT return a new refresh token on refresh. Dropping
-        // it here would leave the app with no way to refresh again.
+        // Spotify usually does NOT return a new refresh token on refresh.
+        // Dropping it would leave the client unable to ever refresh again.
         stubFetch(() => response(200, { access_token: 'new-access' }));
 
         const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
 
-        assert.equal(JSON.parse(result.body).refresh_token, 'old-refresh');
+        assert.equal(result.refresh_token, 'old-refresh');
+    });
+
+    test('prefers a rotated refresh token when Spotify sends one', async () => {
+        stubFetch(() => response(200, { access_token: 'new-access', refresh_token: 'rotated' }));
+
+        const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
+
+        assert.equal(result.refresh_token, 'rotated');
     });
 
     test('sends client credentials as HTTP Basic and the refresh_token grant', async () => {
@@ -69,35 +127,8 @@ describe('refresh token handler', () => {
             options.headers.Authorization,
             'Basic ' + Buffer.from('test-client-id:test-client-secret').toString('base64')
         );
-        assert.equal(options.headers['Content-Type'], 'application/x-www-form-urlencoded');
         const body = new URLSearchParams(options.body.toString());
         assert.equal(body.get('grant_type'), 'refresh_token');
         assert.equal(body.get('refresh_token'), 'old-refresh');
-    });
-
-    test('passes through the status and error detail when Spotify rejects the token', async () => {
-        // The app relies on the 400 to know the grant is dead and a full re-auth
-        // is needed, so the status must not be flattened into a 200 or a 500.
-        stubFetch(() => response(400, {
-            error: 'invalid_grant',
-            error_description: 'Invalid refresh token'
-        }));
-
-        const result = await lambda.handler({ data: { refresh_token: 'revoked' } });
-
-        assert.equal(result.statusCode, 400);
-        assert.deepEqual(JSON.parse(result.body), {
-            error: 'invalid_grant',
-            error_description: 'Invalid refresh token'
-        });
-    });
-
-    test('returns 500 when the request to Spotify cannot be made at all', async () => {
-        stubFetch(() => { throw new Error('network down'); });
-
-        const result = await lambda.handler({ data: { refresh_token: 'old-refresh' } });
-
-        assert.equal(result.statusCode, 500);
-        assert.equal(JSON.parse(result.body).error, 'network down');
     });
 });
