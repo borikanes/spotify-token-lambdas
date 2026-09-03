@@ -15,6 +15,21 @@ const ONE_DAY_IN_MILLISECONDS = 86400;
 
 const spotifyBaseURL = "https://api.spotify.com/v1";
 
+// Share of a playlist's tracks that has to look "new" before we treat the run as a
+// bulk reload rather than a genuine update, and drop it.
+//
+// Chart-style playlists (e.g. "Top 100 Nigeria", 75GeX247deNdTX7zdyZDnU) are rebuilt
+// wholesale every day, so every track gets a fresh added_at and the whole playlist
+// reads as new on every hourly run — forever, since the reload keeps outrunning the
+// SongTrackMapper TTL. That spammed watchers with ~100 tracks a day, every day.
+//
+// This deliberately ignores playlist ownership. The rule it replaces required
+// owner.display_name === "Spotify" plus an exact tracks.total === newTracks.length
+// match, and missed on both counts: the offending playlists are user-curated, and
+// a handful of their tracks always fall outside the 24h window (96–97 of 100), so
+// strict equality never held.
+const BULK_RELOAD_RATIO = 0.85;
+
 // removeUndefinedValues matches v2 DocumentClient leniency — without it, any undefined
 // attribute (e.g. a missing playlist title) would make the whole put() throw
 const documentClient = DynamoDBDocumentClient.from(
@@ -106,8 +121,8 @@ function isTimeWithin24Hours(addedAtTimestamp) {
  * @param {string} playlistId - Spotify playlist ID.
  * @param {string} spotifyToken - Spotify API access token.
  * @returns {Promise<{tracks: Object[], playlistTitle: string}>} Track items added in the
- *   last 24 hours plus the playlist title; tracks is [] on error or when the playlist
- *   looks like a full Spotify-owned reload (anti-spam rule).
+ *   last 24 hours plus the playlist title; tracks is [] on error or when at least
+ *   BULK_RELOAD_RATIO of the playlist looks new (anti-spam rule, any owner).
  */
 async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
     let newTracksArray = []
@@ -146,9 +161,11 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
         newTracksArray.push(...(items.filter(item => isTimeWithin24Hours(item.added_at) )));
     }
 
-    // If spotify reloads 100% of their playlist, just ignore and return no tracks.
-    if (playlistResponseBody.tracks.total === newTracksArray.length && playlistResponseBody.owner.display_name === "Spotify") {
-        console.log(`All tracks in playlist ${playlistId} is reloaded; weird spotify reload`);
+    // If almost the whole playlist looks new, it was reloaded rather than updated —
+    // drop the run instead of notifying watchers about every track. See BULK_RELOAD_RATIO.
+    const totalTracks = playlistResponseBody.tracks.total;
+    if (totalTracks > 0 && newTracksArray.length >= totalTracks * BULK_RELOAD_RATIO) {
+        console.log(`Playlist ${playlistId} looks like a bulk reload (${newTracksArray.length}/${totalTracks} tracks new); skipping`);
         return { tracks: [], playlistTitle };
     }
 

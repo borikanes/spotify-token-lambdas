@@ -134,16 +134,64 @@ describe('getTracksAddedInTheLast24Hours', () => {
         assert.deepEqual(tracks, []);
     });
 
-    test('does not apply the reload rule to a user-owned playlist', async () => {
+    test('applies the reload rule to a user-owned playlist too', async () => {
+        // Chart playlists like "Top 100 Nigeria" are user-curated but rebuilt daily.
+        // The rule used to require a Spotify-owned playlist, so these spammed watchers
+        // with the whole playlist every single day.
         mock.method(globalThis, 'fetch', async () => response(200, {
-            name: 'My Playlist',
+            name: 'Top 100 Nigeria',
             owner: { display_name: 'Someone' },
             tracks: { total: 2, next: null, items: [item('a'), item('b')] }
         }));
 
         const { tracks } = await getTracksAddedInTheLast24Hours('user-pl', 'token');
 
-        assert.equal(tracks.length, 2);
+        assert.deepEqual(tracks, []);
+    });
+
+    test('applies the reload rule when most but not all of the playlist is new', async () => {
+        // The real-world case the old exact-equality check missed: 96–97 of 100 tracks
+        // carry a fresh added_at, the remaining few do not, so `total === length` never held.
+        const items = Array.from({ length: 100 }, (_, i) =>
+            item(`t${i}`, i < 97 ? hoursAgo(1) : hoursAgo(50)));
+        mock.method(globalThis, 'fetch', async () => response(200, {
+            name: 'Top 100 Nigeria',
+            owner: { display_name: 'Someone' },
+            tracks: { total: 100, next: null, items }
+        }));
+
+        const { tracks } = await getTracksAddedInTheLast24Hours('chart-pl', 'token');
+
+        assert.deepEqual(tracks, []);
+    });
+
+    test('still reports a genuine partial update below the reload threshold', async () => {
+        // 30 of 100 swapped is a real update, not a reload — watchers should hear about it.
+        const items = Array.from({ length: 100 }, (_, i) =>
+            item(`t${i}`, i < 30 ? hoursAgo(1) : hoursAgo(50)));
+        mock.method(globalThis, 'fetch', async () => response(200, {
+            name: 'My Playlist',
+            owner: { display_name: 'Someone' },
+            tracks: { total: 100, next: null, items }
+        }));
+
+        const { tracks } = await getTracksAddedInTheLast24Hours('user-pl', 'token');
+
+        assert.equal(tracks.length, 30);
+    });
+
+    test('does not treat an empty playlist as a reload', async () => {
+        // Guards the ratio against total === 0, where 0 >= 0 would suppress spuriously.
+        mock.method(globalThis, 'fetch', async () => response(200, {
+            name: 'Empty Playlist',
+            owner: { display_name: 'Someone' },
+            tracks: { total: 0, next: null, items: [] }
+        }));
+
+        const { tracks } = await getTracksAddedInTheLast24Hours('empty-pl', 'token');
+
+        assert.deepEqual(tracks, []);
+        assert.deepEqual(getFailedPlaylists(), []);
     });
 
     test('follows pagination and merges pages', async () => {
