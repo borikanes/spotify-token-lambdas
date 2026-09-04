@@ -30,6 +30,14 @@ const spotifyBaseURL = "https://api.spotify.com/v1";
 // strict equality never held.
 const BULK_RELOAD_RATIO = 0.85;
 
+// Smallest playlist the reload rule is allowed to act on. Unlike the rule it
+// replaced, the ratio check is ownership-blind, so without a floor it also fires on
+// small playlists that legitimately turn over completely — add 4 tracks to a 4-track
+// playlist and 100% of it looks new, and the watcher would never be told. A playlist
+// has to be big enough that "nearly all of it changed at once" means a reload rather
+// than ordinary use.
+const MIN_TRACKS_FOR_RELOAD_CHECK = 20;
+
 // removeUndefinedValues matches v2 DocumentClient leniency — without it, any undefined
 // attribute (e.g. a missing playlist title) would make the whole put() throw
 const documentClient = DynamoDBDocumentClient.from(
@@ -122,7 +130,8 @@ function isTimeWithin24Hours(addedAtTimestamp) {
  * @param {string} spotifyToken - Spotify API access token.
  * @returns {Promise<{tracks: Object[], playlistTitle: string}>} Track items added in the
  *   last 24 hours plus the playlist title; tracks is [] on error or when at least
- *   BULK_RELOAD_RATIO of the playlist looks new (anti-spam rule, any owner).
+ *   BULK_RELOAD_RATIO of a playlist of at least MIN_TRACKS_FOR_RELOAD_CHECK tracks
+ *   looks new (anti-spam rule, any owner).
  */
 async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
     let newTracksArray = []
@@ -162,9 +171,11 @@ async function getTracksAddedInTheLast24Hours(playlistId, spotifyToken) {
     }
 
     // If almost the whole playlist looks new, it was reloaded rather than updated —
-    // drop the run instead of notifying watchers about every track. See BULK_RELOAD_RATIO.
+    // drop the run instead of notifying watchers about every track. Small playlists are
+    // exempt: see BULK_RELOAD_RATIO and MIN_TRACKS_FOR_RELOAD_CHECK.
     const totalTracks = playlistResponseBody.tracks.total;
-    if (totalTracks > 0 && newTracksArray.length >= totalTracks * BULK_RELOAD_RATIO) {
+    if (totalTracks >= MIN_TRACKS_FOR_RELOAD_CHECK
+        && newTracksArray.length >= totalTracks * BULK_RELOAD_RATIO) {
         console.log(`Playlist ${playlistId} looks like a bulk reload (${newTracksArray.length}/${totalTracks} tracks new); skipping`);
         return { tracks: [], playlistTitle };
     }
